@@ -37,6 +37,12 @@
         "delete_after_convert": true
       }
     },
-    "use_stream": true
+    "use_stream": true,
+    "max_exam_attempts": 5
+  },
+  "cache": {
+    "max_files": 500,
+    "max_size_mb": 1024,
+    "max_age_days": 30
   }
 }

@@ -65,3 +65,23 @@ class MaterialsTests(unittest.TestCase):
             self.assertEqual(client.parseTxt("https://example.test/material"), "converted")
             api.files.create.assert_called_once()
             api.files.delete.assert_called_once_with(file_id="our-id")
+
+    def test_deleted_remote_upload_is_recreated_once(self):
+        import hashlib
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory() as directory:
+            client, api = self.create_client(directory)
+            local = Path(directory) / "sample.pptx"
+            local.write_bytes(b"example")
+            digest = hashlib.sha256(local.read_bytes()).hexdigest()
+            client._files[digest] = {"id": "stale", "size": 7, "created_at": 1}
+            client._save_manifest()
+            client._download = Mock(return_value=local)
+            error = RuntimeError("missing upload")
+            error.status_code = 404
+            api.files.content.side_effect = [error, SimpleNamespace(text="restored text")]
+            api.files.create.return_value.id = "new-owned"
+            self.assertEqual(client.parseTxt("https://example.test/ppt"), "restored text")
+            api.files.create.assert_called_once()
+            self.assertEqual(client._files[digest]["id"], "new-owned")

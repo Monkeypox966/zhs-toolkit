@@ -46,6 +46,13 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertEqual(len(result.succeeded), 1)
 
+    def test_exhausted_candidate_deadline_does_not_hide_video_in_another_course(self):
+        client = Mock()
+        client.fuckVideo.side_effect = [TimeLimitExceeded("limit"), None]
+        result = execute_tasks(client, [{"id": "c1"}, {"id": "c2"}], {}, videos=["v1"])
+        self.assertEqual(len(result.succeeded), 1)
+        self.assertEqual(result.skipped, [])
+
     def test_failures_and_limits_have_distinct_results(self):
         client = Mock()
         client.fuckCourse.side_effect = [RuntimeError("broken"), TimeLimitExceeded("limit"), None]
@@ -60,13 +67,18 @@ class WorkflowTests(unittest.TestCase):
         config.ai.enabled = False
         client = MagicMock()
         client.fuckAiCourse.side_effect = RuntimeError("simulated failure")
-        with (
-            patch("zhs.config.load_config", return_value=config),
-            patch("zhs.clients.course.ZHSClient", return_value=client),
-            patch("zhs.app.restore_cookies", return_value=True),
-            patch("builtins.print"),
-        ):
-            self.assertEqual(main(["-ai", "1", "2"]), 1)
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch("zhs.config.load_config", return_value=config),
+                patch("zhs.clients.course.ZHSClient", return_value=client),
+                patch("zhs.app.restore_cookies", return_value=True),
+                patch(
+                    "zhs.common.utils.getRealPath",
+                    side_effect=lambda name: str(Path(directory) / name),
+                ),
+                patch("builtins.print"),
+            ):
+                self.assertEqual(main(["-ai", "1", "2", "--once"]), 1)
         client.close.assert_called_once()
 
     def test_partial_failure_propagates_from_course_wrapper(self):
@@ -105,7 +117,10 @@ class WorkflowTests(unittest.TestCase):
     def test_keyboard_interrupt_has_distinct_exit_code(self):
         config = ObjDict(copy.deepcopy(DEFAULT_CONFIG), default=None)
         client = MagicMock()
-        client.fuckCourse.side_effect = KeyboardInterrupt()
+        client.getZhidaoList.return_value = []
+        client.getHikeList.return_value = [{"courseId": 1}]
+        client.getZhidaoAiList.return_value = []
+        client.fuckHikeCourse.side_effect = KeyboardInterrupt()
         with tempfile.TemporaryDirectory() as directory:
             with (
                 patch("zhs.config.load_config", return_value=config),

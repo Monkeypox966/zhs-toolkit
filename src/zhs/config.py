@@ -1,6 +1,7 @@
 """Configuration defaults, migration and validation."""
 
 import json
+import math
 from copy import deepcopy
 from pathlib import Path
 
@@ -22,6 +23,7 @@ DEFAULT_CONFIG = {
     "pushplus": {"enable": False, "token": ""},
     "bark": {"enable": False, "token": "https://example.com/xxxxxxxxx"},
     "config_version": "1.4.0",
+    "cache": {"max_files": 500, "max_size_mb": 1024, "max_age_days": 30},
     "ai": {
         "enabled": True,
         "use_zhidao_ai": True,
@@ -76,6 +78,7 @@ def load_config(path=None):
     merged = deep_merge(DEFAULT_CONFIG, supplied)
     if versionCmp(version, DEFAULT_CONFIG["config_version"]) < 0:
         merged["config_version"] = DEFAULT_CONFIG["config_version"]
+    validate_config(merged)
     if merged != original:
         atomic_write_json(path, merged)
     return ObjDict(merged, default=None)
@@ -87,6 +90,49 @@ def require_fields(config, fields, label):
     missing = [field for field in fields if not config.get(field)]
     if missing:
         raise ValueError(f"{label}配置缺少字段：{', '.join(missing)}")
+
+
+def validate_config(config):
+    for path in (
+        "qrlogin",
+        "save_cookies",
+        "tree_view",
+        "progressbar_view",
+        "ai.enabled",
+        "ai.use_zhidao_ai",
+        "ai.use_stream",
+        "ai.ppt_processing.provide_to_ai",
+        "ai.ppt_processing.moonShot.delete_after_convert",
+        "pushplus.enable",
+        "bark.enable",
+        "qr_extra.ensure_unicode",
+    ):
+        value = config
+        for key in path.split("."):
+            value = value[key]
+        if not isinstance(value, bool):
+            raise ValueError(f"{path} 必须是真正的 JSON 布尔值 true/false")
+    if config["qr_extra"]["show_in_terminal"] is not None and not isinstance(
+        config["qr_extra"]["show_in_terminal"], bool
+    ):
+        raise ValueError("qr_extra.show_in_terminal 必须是 true、false 或 null")
+    if not isinstance(config.get("proxies"), dict) or any(
+        not isinstance(value, str) for value in config["proxies"].values()
+    ):
+        raise ValueError("proxies 必须是字符串值组成的对象")
+    for key in ("max_files", "max_size_mb", "max_age_days"):
+        value = config["cache"][key]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value < 0
+        ):
+            raise ValueError(f"cache.{key} 必须是有限非负数")
+        if key == "max_files" and not isinstance(value, int):
+            raise ValueError("cache.max_files 必须是整数")
+    if config.get("logLevel") not in ("NOTSET", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+        raise ValueError("logLevel 无效")
 
 
 def validate_openai_config(config):

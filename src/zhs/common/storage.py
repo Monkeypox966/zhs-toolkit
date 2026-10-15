@@ -20,7 +20,7 @@ def atomic_write_json(path, data):
             delete=False,
         ) as stream:
             temporary = Path(stream.name)
-            json.dump(data, stream, indent=4, ensure_ascii=False)
+            json.dump(data, stream, indent=4, ensure_ascii=False, allow_nan=False)
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())

@@ -1,0 +1,10 @@
+{
+  "id": 101,
+  "version": 1,
+  "questionType": 1,
+  "content": "Sample question",
+  "optionVos": [
+    {"id": 10, "content": "Option A"},
+    {"id": 20, "content": "Option B"}
+  ]
+}

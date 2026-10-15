@@ -2,6 +2,7 @@
 
 import argparse
 import math
+import re
 
 from zhs import __version__
 
@@ -28,6 +29,12 @@ def nonnegative_int(value):
     if number < 0:
         raise argparse.ArgumentTypeError("must be zero or a positive integer")
     return number
+
+
+def run_identifier(value):
+    if value == "latest" or re.fullmatch(r"\d{8}T\d{6}Z-[0-9a-f]{8}", value):
+        return value
+    raise argparse.ArgumentTypeError("expected latest or a valid RUN_ID")
 
 
 def boolean_option(parser, name, help_text, *aliases):
@@ -59,7 +66,7 @@ def build_parser():
         "-l",
         "--limit",
         type=nonnegative_int,
-        default=0,
+        default=None,
         help="Per-course limit in minutes (0: unlimited)",
     )
     boolean_option(parser, "qrlogin", "Use QR login", "-q")
@@ -76,12 +83,39 @@ def build_parser():
         "--noexam",
         nargs="?",
         const=True,
-        default=False,
+        default=None,
         type=parse_bool,
         help="Skip AI exams (also accepts true/false)",
     )
     exams.add_argument("--exam", dest="noexam", action="store_false")
     parser.add_argument(
         "--check", action="store_true", help="Login and list courses without changing study records"
+    )
+    restart = parser.add_mutually_exclusive_group()
+    restart.add_argument(
+        "--resume",
+        nargs="?",
+        const="latest",
+        type=run_identifier,
+        metavar="RUN_ID",
+        help="Resume unfinished tasks from a saved run",
+    )
+    restart.add_argument(
+        "--retry-failed",
+        nargs="?",
+        const="latest",
+        type=run_identifier,
+        metavar="RUN_ID",
+        help="Retry failed and pending tasks from a saved run",
+    )
+    parser.add_argument("--report", metavar="PATH", help="Export the run report as JSON")
+    parser.add_argument(
+        "--history", action="store_true", help="List recent local runs without login"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Resolve and save a task plan without executing it"
+    )
+    parser.add_argument(
+        "--once", action="store_true", help="Run one pass without automatic recovery rounds"
     )
     return parser

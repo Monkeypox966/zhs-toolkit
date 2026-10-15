@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, Mock, patch
 from zhs.clients.course import Fucker
 from zhs.common.logging import logger
 from zhs.common.models import ObjDict
-from zhs.common.runtime import OperationFailed, TimeLimitExceeded
+from zhs.common.runtime import OperationFailed, SubmissionUncertainError, TimeLimitExceeded
 
 
 def setUpModule():
@@ -88,7 +88,7 @@ class VideoTests(unittest.TestCase):
         self.client.queryAiExam = Mock(
             return_value={"paperId": 1, "examTestId": 2, "masteryScore": 50}
         )
-        with patch("zhs.clients.course.ExamCtx") as factory:
+        with patch("zhs.clients.ai_courses.ExamCtx") as factory:
             factory.return_value.startFuck.return_value = (False, 0, 1)
             with self.assertRaises(OperationFailed):
                 self.client.fuckAiCourse(1, 2, {"max_exam_attempts": 2})
@@ -97,10 +97,77 @@ class VideoTests(unittest.TestCase):
     def test_noexam_does_not_create_exam_or_query_paper(self):
         self.ai_knowledge()
         self.client.queryAiExam = Mock()
-        with patch("zhs.clients.course.ExamCtx") as factory:
+        with patch("zhs.clients.ai_courses.ExamCtx") as factory:
             self.client.fuckAiCourse(1, 2, {}, no_exam=True)
             factory.assert_not_called()
         self.client.queryAiExam.assert_not_called()
+
+    def test_uncertain_exam_does_not_block_later_knowledge_points(self):
+        self.ai_knowledge()
+        nodes = self.client.getAiKnowlegePoints.return_value.cakeThemeList[0].knowledgeList
+        nodes.append(ObjDict({"knowledgeId": 2, "knowledgeName": "second", "studyProgress": 100}))
+        self.client.queryAiExam = Mock(
+            return_value={"paperId": 1, "examTestId": 2, "masteryScore": 0}
+        )
+        with patch("zhs.clients.ai_courses.ExamCtx") as factory:
+            factory.return_value.startFuck.side_effect = [
+                SubmissionUncertainError("grading"),
+                (True, 1, 1),
+            ]
+            with self.assertRaises(SubmissionUncertainError):
+                self.client.fuckAiCourse(1, 2, {})
+            self.assertEqual(factory.return_value.startFuck.call_count, 2)
+        self.assertIn(("1", "2", "2"), self.client._completed_ai_knowledge)
+
+    def test_zero_duration_text_is_opened_instead_of_silently_skipped(self):
+        self.client.fuckFile = Mock()
+        self.client._traverse(
+            "1",
+            ObjDict(
+                {
+                    "id": 2,
+                    "name": "text",
+                    "dataType": 1,
+                    "studyTime": 0,
+                    "totalTime": 0,
+                    "childList": [],
+                }
+            ),
+        )
+        self.client.fuckFile.assert_called_once_with("1", 2)
+
+    def test_material_conversion_receives_local_cache_policy(self):
+        self.ai_knowledge()
+        self.client.cache_policy = {"max_files": 2, "max_size_mb": 3, "max_age_days": 4}
+        self.client.queryAiExam = Mock(
+            return_value={"paperId": 1, "examTestId": 2, "masteryScore": 0}
+        )
+        self.client.listKnowledgeResources = Mock(
+            return_value=ObjDict(
+                {
+                    "resourceList": [
+                        {
+                            "resourcesDetail": {
+                                "resourcesType": 1,
+                                "resourcesDistributeType": 4,
+                                "resourcesName": "slides",
+                                "resourcesUrl": "https://example.test/ppt",
+                            }
+                        }
+                    ]
+                }
+            )
+        )
+        config = {"ppt_processing": {"provide_to_ai": True, "moonShot": {"api_key": "test"}}}
+        with (
+            patch("zhs.clients.ai_courses.PptToTxt") as materials,
+            patch("zhs.clients.ai_courses.ExamCtx") as exam,
+        ):
+            exam.return_value.startFuck.return_value = (True, 1, 1)
+            self.client.fuckAiCourse(1, 2, config)
+            self.assertEqual(materials.call_args.kwargs["local_max_cache_files"], 2)
+            self.assertEqual(materials.call_args.kwargs["local_max_cache_size_mb"], 3)
+            self.assertEqual(materials.call_args.kwargs["local_max_age_days"], 4)
 
     def test_resource_failure_marks_course_failed(self):
         self.ai_knowledge(progress=0)

@@ -33,7 +33,13 @@ class CliConfigTests(unittest.TestCase):
         self.assertIsNone(build_parser().parse_args([]).tree_view)
 
     def test_invalid_boolean_and_nonfinite_speed(self):
-        for arguments in (["--tree-view", "maybe"], ["--speed", "nan"], ["--limit", "-1"]):
+        for arguments in (
+            ["--tree-view", "maybe"],
+            ["--speed", "nan"],
+            ["--limit", "-1"],
+            ["--resume", ""],
+            ["--retry-failed", "../invalid"],
+        ):
             with self.subTest(arguments=arguments), patch("sys.stderr", io.StringIO()):
                 with self.assertRaises(SystemExit):
                     build_parser().parse_args(arguments)

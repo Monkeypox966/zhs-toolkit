@@ -1,0 +1,5 @@
+{
+  "zhidao": [{"courseName": "Shared course", "secret": "shared123"}],
+  "hike": [{"courseName": "Campus course", "courseId": 88}],
+  "ai": [{"courseName": "AI course", "courseId": 123, "classId": 456}]
+}

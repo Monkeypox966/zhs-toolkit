@@ -4,14 +4,23 @@ import copy
 import json
 import os
 import threading
-import time
-from random import randint, sample
+from random import sample
 from typing import TYPE_CHECKING
+from uuid import uuid4
+
+import requests
 
 from zhs.clients.ai import Openai
+from zhs.common.checkpoints import submission_checkpoint
+from zhs.common.contracts import ProtocolError, identifier, sheet_questions, validate_answers
 from zhs.common.crypto import EXAM_KEY
+from zhs.common.locking import FileLock
 from zhs.common.logging import logger
-from zhs.common.runtime import OperationFailed, TimeLimitExceeded
+from zhs.common.runtime import (
+    OperationFailed,
+    SubmissionUncertainError,
+    TimeLimitExceeded,
+)
 from zhs.common.storage import atomic_write_json
 from zhs.common.transport import create_session
 from zhs.common.utils import getRealPath, progressBar
@@ -42,6 +51,8 @@ class ExamCtx:
         self.opExtra = opExtra
         self.aiConfig = aiConfig
         self.progress_view = progress_view
+        self._submission_id = uuid4().hex
+        self._submission_state = None
 
         self.answerCache = {}
         self.allAnswerCache = {}  # 存储同课程所有题目的答案
@@ -78,30 +89,28 @@ class ExamCtx:
             )
 
     def getAnswerpath(self, examTestId):
-        answerpath = getRealPath(f"aiexamAnswer/{self.courseId}/{examTestId}.json")
+        answerpath = getRealPath(
+            f"aiexamAnswer/{identifier(self.courseId)}/{identifier(examTestId)}.json"
+        )
 
         # 确保目录存在
         os.makedirs(os.path.dirname(answerpath), exist_ok=True)
 
         # 如果文件不存在，创建一个包含空字典的 JSON 文件
-        if not os.path.exists(answerpath):
-            atomic_write_json(answerpath, {})
-
         return answerpath
 
     def getAllAnswerpath(self):  # 同课程所有题目的答案
-        answerpath = getRealPath(f"aiexamAnswer/{self.courseId}/data.json")
+        answerpath = getRealPath(f"aiexamAnswer/{identifier(self.courseId)}/data.json")
 
         # 确保目录存在
         os.makedirs(os.path.dirname(answerpath), exist_ok=True)
 
         # 如果文件不存在，创建一个包含空字典的 JSON 文件
-        if not os.path.exists(answerpath):
-            atomic_write_json(answerpath, {})
-
         return answerpath
 
     def _load_cache(self, path):
+        if not os.path.isfile(path):
+            return {}
         try:
             with open(path, encoding="utf-8") as stream:
                 data = json.load(stream)
@@ -126,24 +135,33 @@ class ExamCtx:
 
     def readAnswerCache(self, examTestId):
         all_path = self.getAllAnswerpath()
-        self.allAnswerCache = self._load_cache(all_path)
-        directory = os.path.dirname(all_path)
-        files = [
-            os.path.join(directory, name)
-            for name in os.listdir(directory)
-            if name.endswith(".json") and name != "data.json"
-        ]
-        for path in sorted(files, key=os.path.getmtime):
-            self.allAnswerCache.update(self._load_cache(path))
-        self.answerCache = self._load_cache(self.getAnswerpath(examTestId))
+        with FileLock(os.path.join(os.path.dirname(all_path), ".answers.lock"), timeout=30):
+            self.allAnswerCache = self._load_cache(all_path)
+            directory = os.path.dirname(all_path)
+            files = [
+                os.path.join(directory, name)
+                for name in os.listdir(directory)
+                if name.endswith(".json") and name != "data.json"
+            ]
+            for path in sorted(files, key=os.path.getmtime):
+                self.allAnswerCache.update(self._load_cache(path))
+            self.answerCache = self._load_cache(self.getAnswerpath(examTestId))
         return self.answerCache, self.allAnswerCache
 
     def writeAnswerCacheToDisk(self):
         answerpath = self.getAnswerpath(self.examTestId)
-        atomic_write_json(answerpath, self.answerCache)
-
-        allAnswerpath = self.getAllAnswerpath()
-        atomic_write_json(allAnswerpath, self.allAnswerCache)
+        all_path = self.getAllAnswerpath()
+        with FileLock(os.path.join(os.path.dirname(all_path), ".answers.lock"), timeout=30):
+            pending = getattr(self, "_dirty_answers", self.answerCache)
+            per_exam = self._load_cache(answerpath)
+            all_answers = self._load_cache(all_path)
+            per_exam.update(pending)
+            all_answers.update(pending)
+            atomic_write_json(answerpath, per_exam)
+            atomic_write_json(all_path, all_answers)
+            self.answerCache = per_exam
+            self.allAnswerCache = all_answers
+            self._dirty_answers = {}
 
     def getAnswer(self, questionId: int, version: int = 1) -> dict | None:
         key = str(questionId) if version == 1 else f"{questionId}_{version}"
@@ -151,21 +169,21 @@ class ExamCtx:
         return result
 
     def setAnswer(self, questionId: int, version: int, answer_data: dict):
-        self.answerCache[str(questionId) if version == 1 else f"{questionId}_{version}"] = {
+        key = identifier(questionId) if version == 1 else f"{identifier(questionId)}_{version}"
+        if not answer_data.get("answer"):
+            raise ProtocolError("Refusing to cache an empty answer")
+        entry = {
             "version": version,
             "question": answer_data.get("question", ""),
-            "answer": answer_data.get("answer", ""),
+            "answer": answer_data["answer"],
             "answer_content": answer_data.get("answer_content", ""),
             "questionDict": answer_data.get("questionDict", {}),
         }
-        self.allAnswerCache[str(questionId) if version == 1 else f"{questionId}_{version}"] = {
-            "version": version,
-            "question": answer_data.get("question", ""),
-            "answer": answer_data.get("answer", ""),
-            "answer_content": answer_data.get("answer_content", ""),
-            "questionDict": answer_data.get("questionDict", {}),
-        }
-
+        if not hasattr(self, "_dirty_answers"):
+            self._dirty_answers = {}
+        self._dirty_answers[key] = entry
+        self.answerCache[key] = entry
+        self.allAnswerCache[key] = entry
         self.writeAnswerCacheToDisk()
 
     def openExam(self, triedTimes: int = 0):
@@ -252,7 +270,9 @@ class ExamCtx:
 
         try:
             ret = self.fucker.zhidaoAiExamQuery(url, data, ok_code=0, key=EXAM_KEY, method="GET")
-            self.sheetContent = ret["data"]["partSheetVos"][0]["questionSheetVos"]
+            self.sheetContent = sheet_questions(ret)
+        except ProtocolError:
+            raise
         except Exception as e:
             logger.error(f"getSheetContent failed: {e}")
 
@@ -308,8 +328,9 @@ class ExamCtx:
         return True
 
     def submitExam(self, triedTimes: int = 0):
+        if self._submission_state is not None:
+            raise SubmissionUncertainError("本次试卷已尝试提交，请先核对平台状态")
         url = "https://studentexamtest.zhihuishu.com/gateway/t/v1/exam/user/submit"
-
         data = {
             "examTestId": self.examTestId,
             "courseId": self.courseId,
@@ -317,104 +338,131 @@ class ExamCtx:
             "examPaperId": self.examPaperId,
             "aiKnlowledgeId": self.knowledgeId,
         }
-
+        self.fucker._checkTimeLimit(self.courseId)
         try:
+            self._checkpoint_submission("submitting")
             self.fucker.zhidaoAiExamQuery(url, data, ok_code=0, key=EXAM_KEY, method="POST")
-        except Exception as e:
-            logger.error(f"submitExam failed: {e}")
-            if triedTimes < 3:
-                logger.error(f"submitExam failed, retrying... {triedTimes} times")
-                return self.submitExam(triedTimes + 1)
-            else:
-                logger.error("submitExam failed, retried 3 times, giving up...")
-                raise e
-
+            self._checkpoint_submission("accepted")
+        except (
+            requests.exceptions.RequestException,
+            ValueError,
+            KeyError,
+            AttributeError,
+        ) as error:
+            raise SubmissionUncertainError(
+                f"试卷 {self.examTestId} 的提交结果无法确认，请核对平台状态；不会自动重复提交：{error}"
+            ) from error
         finally:
             self.stop_heartbeat()
-
         return True
 
-    def getQuestionAnswer(self, questionDict: dict) -> tuple[list, str] | None:
-        questionId = questionDict["id"]
-        questionType = questionDict["questionType"]
-        version = questionDict.get("version", 1)
+    def _checkpoint_submission(self, state, **result):
+        self._submission_state = state
+        submission_checkpoint(
+            self._submission_id,
+            state,
+            course_id=str(self.courseId),
+            knowledge_id=str(self.knowledgeId),
+            exam_test_id=str(self.examTestId),
+            exam_paper_id=str(self.examPaperId),
+            **result,
+        )
 
-        # 尝试从缓存中获取答案
-        answer = self.getAnswer(questionId, version)
-        if answer is not None:
-            answer = answer.get("answer", "").split("#@#")
-
-            # 随机睡眠3-5秒，模拟网络延迟
-            time.sleep(randint(3, 5))
-            return answer, "cached"
-
-        # 答案不存在，获取题目内容，使用AI生成答案
-        questionContent = questionDict["content"]
-
-        # 选项，只保留有id和content的选项
-        choices = [
-            {"id": option["id"], "content": option["content"]}
-            for option in questionDict["optionVos"]
-            if "id" in option and "content" in option
-        ]
-
-        # 选项数量少于2个，答案就是选项内容
-        if not choices:
-            raise ValueError("Question has no usable options")
-        if len(choices) == 1:
-            answer = choices[0]["id"]
-            return [answer], "single option"
-
+    @classmethod
+    def recover_submission(cls, client, checkpoint):
+        """Read an existing sheet and its grades; never open or submit an exam."""
+        instance = cls(
+            client,
+            checkpoint["course_id"],
+            checkpoint["knowledge_id"],
+            checkpoint["exam_test_id"],
+            checkpoint["exam_paper_id"],
+            progress_view=False,
+            aiConfig={"enabled": False},
+        )
+        instance._submission_id = checkpoint["id"]
+        instance._submission_state = checkpoint["state"]
         try:
-            # 选项数量大于2个，使用AI生成答案
-            op = self.op
+            instance.readAnswerCache(instance.examTestId)
+            return instance._read_exam_result(instance.getSheetContent())
+        finally:
+            instance.close()
 
-            if questionType == 1:
-                # 单选题
-                prompt = op.singleChoiceTemplate(
-                    questionContent, choices, referenceMaterials=self.referenceMaterials
-                )
-            elif questionType == 2:
-                # 多选题
-                prompt = op.multipleChoiceTemplate(
-                    questionContent, choices, referenceMaterials=self.referenceMaterials
-                )
-            elif questionType == 14:
-                # 判断题
-                prompt = op.judgementTemplate(
-                    questionContent, choices, referenceMaterials=self.referenceMaterials
-                )
-            else:
-                raise ValueError(f"Unsupported question type: {questionType}")
-            answer = op.generateAnswer(prompt)
-            return answer, "AI generated"
-        except Exception as e:
-            logger.warning(f"AI answer generation failed: {e}")
-            # 随机生成答案
-            if questionType in (1, 14):
-                answer = self.select_random_answers(choices, 1)
-            elif questionType == 2:
-                answer = self.select_random_answers(choices, 2)
-            else:
-                raise ValueError(f"Unsupported question type: {questionType}") from e
+    def getQuestionAnswer(self, questionDict: dict) -> tuple[list, str]:
+        question_id = questionDict["id"]
+        version = questionDict.get("version", 1)
+        # Validate the complete option set even when consulting an old cache.
+        options = questionDict.get("optionVos") or []
+        if not options:
+            raise ProtocolError("Question has no usable options")
+        probe = [options[0].get("id")] if isinstance(options[0], dict) else []
+        validate_answers(questionDict, probe)
+        cached = self.getAnswer(question_id, version)
+        if cached is not None:
+            saved_question = cached.get("questionDict") or {}
+            if not isinstance(saved_question, dict):
+                saved_question = {}
+            stale_content = cached.get("question") and cached["question"] != questionDict.get(
+                "content"
+            )
 
-            time.sleep(randint(3, 5))
+            def option_signature(items):
+                if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+                    return None
+                return sorted((str(item.get("id")), str(item.get("content"))) for item in items)
 
-        return answer, "random"
-
-    def select_random_answers(self, choices, n):
-        # 确保 n 不大于 choices 的长度
-        n = min(n, len(choices))
-
-        # 随机选择 n 个选项
-        selected_choices = sample(choices, n)
-
-        # 返回选中选项的 id
-        return [choice["id"] for choice in selected_choices]
+            stale_options = saved_question.get("optionVos") and option_signature(
+                saved_question["optionVos"]
+            ) != option_signature(questionDict.get("optionVos"))
+            if not stale_content and not stale_options:
+                try:
+                    return validate_answers(
+                        questionDict, cached.get("answer", "").split("#@#")
+                    ), "cached"
+                except ProtocolError:
+                    logger.warning(f"Ignoring invalid cached answer for question {question_id}")
+        if len(options) == 1:
+            return validate_answers(questionDict, [options[0]["id"]]), "single option"
+        question_type = questionDict["questionType"]
+        template_name = {
+            1: "singleChoiceTemplate",
+            2: "multipleChoiceTemplate",
+            14: "judgementTemplate",
+        }[question_type]
+        try:
+            op = getattr(self, "op", None)
+            if op is None:
+                raise RuntimeError("AI is disabled and no valid cached answer is available")
+            prompt = getattr(op, template_name)(
+                questionDict.get("content", ""),
+                [{"id": option["id"], "content": option["content"]} for option in options],
+                referenceMaterials=getattr(self, "referenceMaterials", []),
+            )
+            answers = validate_answers(questionDict, op.generateAnswer(prompt))
+            return answers, "AI generated"
+        except TimeLimitExceeded, SubmissionUncertainError:
+            raise
+        except Exception as error:
+            count = 2 if question_type == 2 else 1
+            selected = sample(options, min(count, len(options)))
+            answers = validate_answers(questionDict, [option["id"] for option in selected])
+            logger.warning(
+                f"题目 {question_id} 的 AI 答案生成或校验失败，改为随机选择 {len(answers)} 项：{error}"
+            )
+            # Only the platform's returned answer key is written to the cache.
+            return answers, "random"
 
     def startFuck(self, referenceMaterials=None) -> tuple[bool, int, int]:
         try:
             return self._run_exam(referenceMaterials or [])
+        except Exception as error:
+            if self._submission_state in {"submitting", "accepted"} and not isinstance(
+                error, SubmissionUncertainError
+            ):
+                raise SubmissionUncertainError(
+                    f"试卷 {self.examTestId} 已尝试提交，后续处理失败，请核对平台状态：{error}"
+                ) from error
+            raise
         finally:
             self.close()
 
@@ -449,7 +497,7 @@ class ExamCtx:
                 raise OperationFailed("试题读取或答案生成失败，未提交试卷")
 
             # 获取题目答案
-            questionContentDict.version = questionDict.get("version", 1)
+            questionContentDict["version"] = questionDict.get("version", 1)
             answer, note = self.getQuestionAnswer(questionContentDict)
 
             if answer is None:
@@ -457,6 +505,7 @@ class ExamCtx:
                 raise OperationFailed("试题读取或答案生成失败，未提交试卷")
 
             # 保存答案
+            self.fucker._checkTimeLimit(self.courseId)
             if not self.saveAnswer(questionDict["questionId"], answer):
                 raise OperationFailed(f"保存题目 {questionDict['questionId']} 失败")
 
@@ -468,11 +517,16 @@ class ExamCtx:
                 )
 
         # 提交考试
+        self.fucker._checkTimeLimit(self.courseId)
         self.submitExam()
 
+        return self._read_exam_result(sheetContent)
+
+    def _read_exam_result(self, sheetContent):
         # 重新取得试卷内容，检查是否答对了，并更新答案缓存
         total_questions = len(sheetContent)
         correct_questions = 0
+        graded_questions = 0
         for questionDict in sheetContent:
             self.fucker._checkTimeLimit(self.courseId)
             # 取得版本
@@ -486,11 +540,15 @@ class ExamCtx:
 
             # 取得做题结果
             result = questionContentDict.get("userAnswerVo", None)
-            if result is None:
+            if not isinstance(result, list) or not result or not isinstance(result[0], dict):
                 logger.error(f"userAnswerVo not found: {questionDict['questionId']}")
                 continue
             # 计算得分
-            if result[0]["isCorrect"] == 1:
+            correct = result[0].get("isCorrect")
+            if isinstance(correct, bool) or correct not in (0, 1):
+                continue
+            graded_questions += 1
+            if correct == 1:
                 correct_questions += 1
             else:
                 logger.error(f"Question {questionDict['questionId']} is not correct")
@@ -511,7 +569,22 @@ class ExamCtx:
                 "answer_content": answer_content_str,
                 "questionDict": questionContentDict,
             }
-            self.setAnswer(questionDict["questionId"], version, answer_dict)
+            if answer:
+                try:
+                    validate_answers(questionContentDict, [option["id"] for option in answer])
+                except ProtocolError:
+                    logger.warning("Returned answer key is incomplete or inconsistent; not cached")
+                else:
+                    self.setAnswer(questionDict["questionId"], version, answer_dict)
+
+        if graded_questions != total_questions:
+            raise SubmissionUncertainError(
+                f"试卷 {self.examTestId} 已提交，但仅取得 {graded_questions}/{total_questions} 道题的评分；"
+                "请核对平台状态，不会自动重复提交"
+            )
+        self._checkpoint_submission(
+            "reviewed", correct_questions=correct_questions, total_questions=total_questions
+        )
 
         # 如果所有题目都做对了，则退出考试
         if correct_questions == total_questions:
