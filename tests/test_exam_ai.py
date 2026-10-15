@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, Mock, patch
 from zhs.clients.ai import Openai
 from zhs.clients.course import Fucker
 from zhs.clients.exam import ExamCtx
+from zhs.common.control import StopRequested, check_stop
 from zhs.common.logging import logger
 from zhs.common.models import ObjDict
 from zhs.common.runtime import OperationFailed, SubmissionUncertainError
@@ -112,6 +113,45 @@ class ExamAiTests(unittest.TestCase):
             instance.submitExam()
         self.assertEqual(instance.fucker.zhidaoAiExamQuery.call_count, 1)
         self.assertTrue(instance.examStopped)
+
+    def test_stop_before_submission_leaves_no_submission_checkpoint(self):
+        instance = self.exam()
+        instance.fucker.zhidaoAiExamQuery = Mock()
+        event = threading.Event()
+        event.set()
+        with patch("zhs.common.control._active", event), self.assertRaises(StopRequested):
+            instance.submitExam()
+        self.assertIsNone(instance._submission_state)
+        instance.fucker.zhidaoAiExamQuery.assert_not_called()
+
+    def test_stop_during_submission_finishes_grading_and_cache(self):
+        instance = self.exam()
+        event = threading.Event()
+        instance.readAnswerCache = Mock()
+        instance.openExam = Mock()
+        instance.fucker.zhidaoAiExamQuery = Mock(side_effect=lambda *a, **k: event.set())
+        instance.getSheetContent = Mock(return_value=[{"questionId": 1}])
+        question = {
+            "id": 1,
+            "questionType": 1,
+            "content": "q",
+            "optionVos": [{"id": 9, "content": "x", "isCorrect": 1}],
+        }
+        instance.getQuestionContent = Mock(
+            side_effect=[
+                ObjDict(question),
+                ObjDict(dict(question, userAnswerVo=[{"isCorrect": 1}])),
+            ]
+        )
+        instance.saveAnswer = Mock(return_value=True)
+        instance.setAnswer = Mock()
+        with patch("zhs.common.control._active", event):
+            self.assertEqual(instance.startFuck([]), (True, 1, 1))
+            self.assertEqual(instance._submission_state, "reviewed")
+            instance.setAnswer.assert_called_once()
+            instance.fucker.zhidaoAiExamQuery.assert_called_once()
+            with self.assertRaises(StopRequested):
+                check_stop()
 
     def test_legacy_version_one_cache_and_broken_cache_are_handled(self):
         instance = self.exam()

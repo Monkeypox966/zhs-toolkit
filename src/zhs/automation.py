@@ -1,9 +1,32 @@
 """Keep unfinished tasks moving, with cooling-off and read-only submission recovery."""
 
-import time
+from datetime import datetime, timedelta, timezone
 
+from zhs.common.control import check_stop, sleep
 from zhs.common.logging import logger
-from zhs.common.runtime import TaskSummary
+from zhs.common.runtime import AuthenticationError, TaskSummary
+
+
+def record_recovery_error(journal, error, round_number=0, delay=30, terminal=False):
+    required = isinstance(error, AuthenticationError) and not error.retryable
+    stopped = terminal or required
+    state = journal.data.setdefault("automation", {})
+    state.update(
+        round=round_number,
+        state="authentication_required" if required else "failed" if stopped else "waiting",
+        phase="authenticate",
+        last_error=str(error),
+        error_type=type(error).__name__,
+        auth_status=getattr(error, "status", None),
+        failed_at=datetime.now(timezone.utc).isoformat(),
+        retry_in_seconds=None if stopped else delay,
+        next_retry_at=None
+        if stopped
+        else (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat(),
+    )
+    journal.data["status"] = "incomplete"
+    journal.save()
+    return required
 
 
 def _restore_completed_knowledge(client, journal):
@@ -35,7 +58,7 @@ def run_until_complete(
     retry_failed=False,
 ):
     """Zero max_rounds means keep recovering until complete or explicitly stopped."""
-    wait = wait or time.sleep
+    wait = wait or sleep
     result = TaskSummary()
     round_number, delay = 0, retry_delay
     previous_progress = None
@@ -45,12 +68,18 @@ def run_until_complete(
         if not retry_failed or task["status"] in {"failed", "pending"}
     }
     while True:
+        check_stop()
         if round_number:
-            journal.data["automation"] = {
-                "round": round_number,
-                "state": "waiting",
-                "retry_in_seconds": delay,
-            }
+            journal.data.setdefault("automation", {}).update(
+                {
+                    "round": round_number,
+                    "state": "waiting",
+                    "retry_in_seconds": delay,
+                    "next_retry_at": (
+                        datetime.now(timezone.utc) + timedelta(seconds=delay)
+                    ).isoformat(),
+                }
+            )
             journal.save()
             if report:
                 journal.export(report)
@@ -63,9 +92,17 @@ def run_until_complete(
             except Exception as error:
                 logger.warning(f"连接恢复暂未成功：{error}")
                 result = TaskSummary(failed=[f"连接恢复失败：{error}"])
+                delay = min(
+                    max_retry_delay,
+                    max(retry_delay, delay * 2, getattr(error, "retry_after", None) or 0),
+                )
+                required = record_recovery_error(journal, error, round_number, delay)
+                if report:
+                    journal.export(report)
+                if required:
+                    raise
                 if max_rounds and round_number >= max_rounds:
                     return result
-                delay = min(max_retry_delay, max(retry_delay, delay * 2))
                 continue
         client.reset_deadlines()
         if any(journal._unresolved_submission(task) for task in journal.data["tasks"]):
@@ -73,7 +110,9 @@ def run_until_complete(
         _restore_completed_knowledge(client, journal)
         journal.data["automation"] = {"round": round_number, "state": "running"}
         old_discovery_errors = list(journal.data.get("discovery_errors", []))
-        result = journal.execute(client, config, executor, retry_failed=retry_failed)
+        result = journal.execute(
+            client, config, executor, retry_failed=retry_failed, allow_partial=True
+        )
         if discover:
             courses, errors = discover()
             journal.extend_courses(courses, errors)

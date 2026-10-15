@@ -17,6 +17,16 @@ class OperationFailed(RuntimeError):
     pass
 
 
+class AuthenticationError(OperationFailed):
+    """A rejected login or expired session, with an explicit retry decision."""
+
+    def __init__(self, message, status=None, retryable=False, retry_after=None):
+        super().__init__(message)
+        self.status = status
+        self.retryable = retryable
+        self.retry_after = retry_after
+
+
 class PendingAnswerError(OperationFailed):
     """Exam processing requires attention; automatic task execution cannot continue."""
 

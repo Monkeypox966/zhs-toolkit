@@ -55,6 +55,13 @@ def boolean_option(parser, name, help_text, *aliases):
 
 def build_parser():
     parser = argparse.ArgumentParser(prog="zhs", description="ZHS Toolkit 课程命令行工具")
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=("run", "stop"),
+        default="run",
+        help="run: 停止旧实例后运行（默认）；stop: 保存进度并停止当前实例",
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("-c", "--course", nargs="+", help="Course IDs")
     parser.add_argument("-v", "--videos", nargs="+", help="Video IDs; requires --course")

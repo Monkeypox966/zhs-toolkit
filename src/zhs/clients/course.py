@@ -21,11 +21,13 @@ from zhs.clients.campus import CampusCourseMixin
 from zhs.clients.exam import ExamCtx as ExamCtx
 from zhs.clients.materials import PptToTxt as PptToTxt
 from zhs.clients.shared import SharedCourseMixin
+from zhs.common.authentication import passport_form
+from zhs.common.control import check_stop, sleep
 from zhs.common.crypto import VIDEO_KEY
 from zhs.common.logging import logger
 from zhs.common.models import ObjDict
 from zhs.common.notifications import barkpusher, pushpluser
-from zhs.common.runtime import OperationFailed, TimeLimitExceeded
+from zhs.common.runtime import AuthenticationError, OperationFailed, TimeLimitExceeded
 from zhs.common.transport import api_query, create_session
 from zhs.common.utils import list_to_cookie_jar
 
@@ -125,6 +127,8 @@ class ZHSClient(SharedCourseMixin, CampusCourseMixin, AICourseMixin):
             cookies = list_to_cookie_jar(cookies)
 
         self._cookies = cookies
+        if not cookies:
+            self.uuid = None
         logger.debug(f"received cookies: {self.cookies}")
         if cookies:
             try:
@@ -162,36 +166,70 @@ class ZHSClient(SharedCourseMixin, CampusCourseMixin, AICourseMixin):
         valid_url = "https://passport.zhihuishu.com/user/validateAccountAndPassword"
         check_url = "https://appcomm-user.zhihuishu.com/app-commserv-user/userInfo/checkNeedAuth"
         self._sessionReady()  # set cookies, headers, proxies
+        self.session.cookies.clear()
         self.session.headers.update(
             {"Origin": "https://passport.zhihuishu.com", "Referer": login_page}
         )
         try:
-            self.session.get(login_page, proxies=self.proxies, timeout=10)
-            form = {"account": username, "password": password}
+            with self.session.get(login_page, proxies=self.proxies, timeout=10) as response:
+                response.raise_for_status()
+            form = passport_form(username, password)
             user_info = self._apiQuery(valid_url, form)  # get uuid and pwd
-            if user_info.status == 1:
-                pass  # success
-            elif user_info.status == -2:
-                raise ValueError("Username or password invalid")
-            elif user_info.status == -4:
-                raise Exception("Multiple invalid attempts, requires captcha")
-            elif user_info.status == -9:
-                raise Exception("Account requires SMS verification")
-            else:
-                pass  # unknown error, just try to ignore
-            need_auth = self._apiQuery(check_url, {"uuid": user_info.uuid}).rt.needAuth
-            if need_auth:
-                raise Exception("Account need auth, please login using browser to pass auth")
-            params = {"account": username, "pwd": user_info.pwd, "validate": 0}
-            self.session.get(login_page, params=params, proxies=self.proxies, timeout=10)
+            status = user_info.get("status")
+            if isinstance(status, bool) or status != 1:
+                detail = (
+                    user_info.get("msg") or user_info.get("message") or "平台未接受当前登录请求"
+                )
+                raise AuthenticationError(
+                    f"{detail}（status={status}）；请核实账号或通过扫码恢复登录",
+                    status=status,
+                    retryable=status == -6,
+                    retry_after=300 if status == -6 else None,
+                )
+            account_id, ticket = user_info.get("uuid"), user_info.get("pwd")
+            if (
+                not isinstance(account_id, str)
+                or not account_id
+                or not isinstance(ticket, str)
+                or not ticket
+            ):
+                raise AuthenticationError("登录响应缺少有效账号标识或一次性票据", status=status)
+            auth = self._apiQuery(check_url, {"uuid": account_id}).get("rt")
+            if not isinstance(auth, dict) or auth.get("needAuth") != 0:
+                raise AuthenticationError("平台要求额外身份验证或返回了无效认证状态")
+            with self.session.get(
+                login_page, params={"pwd": ticket}, proxies=self.proxies, timeout=10
+            ) as response:
+                response.raise_for_status()
             self.cookies = self.session.cookies.copy()
             if not self.cookies:
-                raise Exception("No cookies found")
+                raise AuthenticationError("登录完成后未取得有效 Cookie")
+            if str(self.uuid) != account_id:
+                raise AuthenticationError("登录票据与返回的 Cookie 账号不一致")
 
             logger.info("Login successful")
         except Exception as e:
             logger.exception(e)
-            raise Exception(f"Login failed: {e}")
+            raise
+
+    def refresh_login(self):
+        """Try the existing Passport SSO session before requesting new credentials."""
+        previous = self.cookies.copy()
+        previous_uuid = self.uuid
+        self._sessionReady()
+        page = "https://passport.zhihuishu.com/login?service=https://onlineservice-api.zhihuishu.com/login/gologin"
+        try:
+            with self.session.get(page, proxies=self.proxies, timeout=10) as response:
+                response.raise_for_status()
+            self.cookies = self.session.cookies.copy()
+            if self.uuid != previous_uuid:
+                raise AuthenticationError("SSO 返回了其他账号，拒绝用于当前运行记录")
+            self.courses.clear()
+            self.getZhidaoList()
+        except Exception:
+            self.cookies = previous
+            raise
+        return True
 
     def _qrlogin(self, qr_callback, max_attempts=3):
         """Refresh expired QR codes without unbounded recursion."""
@@ -214,8 +252,7 @@ class ZHSClient(SharedCourseMixin, CampusCourseMixin, AICourseMixin):
             scanned = False
             deadline = time.monotonic() + 180
             while time.monotonic() < deadline:
-                if self._stop_event.wait(0.5):
-                    raise InterruptedError("Client closed")
+                sleep(0.5, self._stop_event)
                 with self.session.get(
                     query_page, params={"qrToken": qr_token}, timeout=10
                 ) as response:
@@ -361,6 +398,7 @@ class ZHSClient(SharedCourseMixin, CampusCourseMixin, AICourseMixin):
             raise e
 
     def _checkTimeLimit(self, cid):
+        check_stop()
         started = self._course_started.setdefault(str(cid), time.monotonic())
         if self.limit and time.monotonic() - started >= self.limit * 60:
             raise TimeLimitExceeded(f"{self.limit} minutes")
@@ -379,8 +417,7 @@ class ZHSClient(SharedCourseMixin, CampusCourseMixin, AICourseMixin):
         if self.limit:
             remaining = self.limit * 60 - (time.monotonic() - self._course_started[str(cid)])
             seconds = min(seconds, max(0, remaining))
-        if self._stop_event.wait(seconds):
-            raise InterruptedError("Client closed")
+        sleep(seconds, self._stop_event)
         self._checkTimeLimit(cid)
 
     def _record_failure(self, error):

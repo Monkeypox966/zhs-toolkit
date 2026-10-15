@@ -5,6 +5,7 @@ import json
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
+from zhs.common.control import check_stop
 from zhs.common.models import ObjDict
 
 
@@ -22,6 +23,7 @@ def create_session(retries=3):
 
 
 def api_query(session, url, data, method="POST", content_type="form", proxies=None):
+    check_stop()
     method = method.upper()
     kwargs = {"proxies": proxies, "timeout": (10, 30)}
     if method == "POST":

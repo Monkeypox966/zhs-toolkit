@@ -23,14 +23,35 @@ def restore_cookies(client, path):
     import json
     from pathlib import Path
 
+    import requests
+
     from zhs.common.logging import logger
 
     if not Path(path).exists():
         return False
     try:
         client.cookies = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+        client.courses.clear()
         client.getZhidaoList()
     except Exception as error:
+        if isinstance(error, requests.RequestException):
+            response = getattr(error, "response", None)
+            if getattr(response, "status_code", None) not in (401, 403):
+                raise
+            try:
+                if client.refresh_login():
+                    from zhs.common.storage import atomic_write_json
+                    from zhs.common.utils import cookie_jar_to_list
+
+                    atomic_write_json(path, cookie_jar_to_list(client.cookies))
+                    print("已通过现有 SSO 会话自动刷新登录态")
+                    return True
+            except requests.RequestException as refresh_error:
+                if getattr(getattr(refresh_error, "response", None), "status_code", None) not in (
+                    401,
+                    403,
+                ):
+                    raise
         logger.warning(f"Saved cookies unavailable: {error}")
         client.cookies = {}
         client.courses.clear()
@@ -42,6 +63,8 @@ def restore_cookies(client, path):
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "stop" and vars(args) != vars(parser.parse_args(["stop"])):
+        parser.error("stop 不能与学习、登录或报告参数组合使用")
     if args.videos and not args.course:
         parser.error("--videos requires --course")
     if args.aicourse and (args.course or args.videos):
@@ -58,14 +81,25 @@ def main(argv=None):
         parser.error("--history cannot be combined with task selection or --report")
     if (args.check or args.fetch) and (args.course or args.aicourse or args.report):
         parser.error("--check/--fetch cannot be combined with task selection or --report")
-    from zhs.common.locking import FileLock
+    from zhs.common.control import StopRequested, managed_runner, stop_runner
     from zhs.common.utils import getRealPath
 
     try:
         if args.history:
             return print_history(getRealPath("var/runs"))
-        with FileLock(getRealPath("var/locks/runner.lock")):
+        if args.command == "stop":
+            stopped = stop_runner(getRealPath("var/locks"))
+            print(
+                "运行实例已退出；下次启动会恢复已保存进度" if stopped else "当前没有正在运行的实例"
+            )
+            return 0
+        with managed_runner(
+            getRealPath("var/locks"), replace=not (args.check or args.fetch or args.dry_run)
+        ):
             return run_application(args)
+    except StopRequested:
+        print("已按停止命令退出；再次执行 uv run zhs 可继续")
+        return 0
     except KeyboardInterrupt:
         print("用户已中断；已建立的任务记录可用 --resume 继续")
         return 130
@@ -94,9 +128,11 @@ def run_application(args):
     from functools import partial
     from pathlib import Path
 
-    from zhs.automation import run_until_complete
+    from zhs.automation import record_recovery_error, run_until_complete
     from zhs.clients.course import ZHSClient
+    from zhs.common.control import check_stop, sleep
     from zhs.common.logging import logger
+    from zhs.common.runtime import AuthenticationError
     from zhs.common.storage import atomic_write_json
     from zhs.common.utils import cookie_jar_to_list, getRealPath, showImage
     from zhs.config import load_config
@@ -106,6 +142,7 @@ def run_application(args):
     client = None
     journal = None
     try:
+        check_stop()
         restart = args.resume or args.retry_failed
         if restart:
             journal = RunJournal.load(getRealPath("var/runs"), restart)
@@ -155,8 +192,17 @@ def run_application(args):
         )
         cookies_path = getRealPath("cookies.json")
 
+        def verify_account():
+            if journal is not None:
+                try:
+                    journal.bind_account(client.uuid)
+                except ValueError as error:
+                    raise AuthenticationError(str(error)) from error
+
         def authenticate():
+            check_stop()
             if config.save_cookies and restore_cookies(client, cookies_path):
+                verify_account()
                 return
             username, password = args.username or config.username, args.password or config.password
             if not args.once and args.qrlogin is not True:
@@ -170,6 +216,7 @@ def run_application(args):
                 client.login(use_qr=True, qr_callback=callback)
             else:
                 client.login(username, password, interactive=args.once)
+            verify_account()
             if config.save_cookies:
                 atomic_write_json(cookies_path, cookie_jar_to_list(client.cookies))
 
@@ -178,14 +225,20 @@ def run_application(args):
                 authenticate()
                 break
             except Exception as error:
-                import time
-
                 import requests
 
-                if args.once or not isinstance(error, requests.RequestException):
+                retryable = isinstance(error, requests.RequestException) or (
+                    isinstance(error, AuthenticationError) and error.retryable
+                )
+                delay = getattr(error, "retry_after", None) or 30
+                if journal is not None:
+                    record_recovery_error(
+                        journal, error, delay=delay, terminal=not retryable or args.once
+                    )
+                if args.once or not retryable:
                     raise
-                logger.warning(f"登录网络暂不可用，30 秒后自动重试：{error}")
-                time.sleep(30)
+                logger.warning(f"登录暂不可用，{delay} 秒后自动重试：{error}")
+                sleep(delay)
         execution_path = getRealPath("execution.json")
         if args.check or args.fetch:
             courses, errors = fetch_courses(client)
@@ -291,6 +344,12 @@ def run_application(args):
             journal.export(args.report)
         return summary.exit_code
     except BaseException as error:
+        if isinstance(error, KeyboardInterrupt) and journal is not None:
+            journal.data["status"] = "interrupted"
+            journal.data.setdefault("automation", {}).update(
+                state="stopped", retry_in_seconds=None, next_retry_at=None
+            )
+            journal.save()
         if isinstance(error, Exception):
             logger.exception(error)
         if journal is not None and args.report:

@@ -172,10 +172,26 @@ class RunJournal:
                     or not isinstance(item.get("id"), str)
                     or not re.fullmatch(r"[0-9a-f]{32}", item["id"])
                     or item["id"] in submission_ids
-                    or item.get("state") not in {"submitting", "accepted", "reviewed"}
+                    or item.get("state") not in {"submitting", "accepted", "reviewed", "rejected"}
                 ):
                     raise ValueError("提交检查点格式无效")
                 submission_ids.add(item["id"])
+                # Earlier versions classified explicit auth rejections as unknown
+                # submissions. Match the exact exam and submit endpoint only.
+                if item["state"] == "submitting" and item.get("exam_test_id"):
+                    legacy = re.search(
+                        rf"试卷\s+{re.escape(str(item['exam_test_id']))}\s+的提交结果无法确认"
+                        r"[^\n]*?(401|403) Client Error:[^\n]*?"
+                        r"https://studentexamtest\.zhihuishu\.com/gateway/t/v1/exam/user/submit(?:\s|$)",
+                        str(task.get("error") or ""),
+                    )
+                    if legacy:
+                        item.update(
+                            state="rejected",
+                            http_status=int(legacy.group(1)),
+                            rejection_source="legacy_http_error",
+                        )
+                        task.update(status="failed", error_type="AuthenticationError")
             if task["status"] == "running":
                 task["status"] = "interrupted"
                 task["error"] = "上次进程未正常结束，任务状态需要重新确认"
@@ -228,7 +244,7 @@ class RunJournal:
             self._check_revision()
             for task in self.data["tasks"]:
                 for item in task.get("submissions", []):
-                    if item["state"] == "reviewed":
+                    if item["state"] in {"reviewed", "rejected"}:
                         continue
                     try:
                         _, correct, total = reconciler(client, item)
@@ -305,7 +321,9 @@ class RunJournal:
 
     @staticmethod
     def _unresolved_submission(task):
-        return any(item["state"] != "reviewed" for item in task.get("submissions", []))
+        return any(
+            item["state"] in {"submitting", "accepted"} for item in task.get("submissions", [])
+        )
 
     def save(self):
         with FileLock(self.path.with_suffix(".lock")):
@@ -391,12 +409,14 @@ class RunJournal:
             group_key(task["courses"], task["video_id"]) for task in self.data["tasks"]
         }
 
-    def execute(self, client, config, executor, retry_failed=False):
+    def execute(self, client, config, executor, retry_failed=False, allow_partial=False):
         with FileLock(self.path.with_suffix(".lock")):
             self._check_revision()
-            return self._execute(client, config, executor, retry_failed=retry_failed)
+            return self._execute(
+                client, config, executor, retry_failed=retry_failed, allow_partial=allow_partial
+            )
 
-    def _execute(self, client, config, executor, retry_failed=False):
+    def _execute(self, client, config, executor, retry_failed=False, allow_partial=False):
         eligible = (
             {"failed", "pending"}
             if retry_failed
@@ -417,7 +437,25 @@ class RunJournal:
                 needs_verification = task.get(
                     "error_type"
                 ) == "SubmissionUncertainError" or self._unresolved_submission(task)
-                if needs_verification:
+                unresolved = [
+                    item
+                    for item in task.get("submissions", [])
+                    if item["state"] in {"submitting", "accepted"}
+                ]
+                partial = (
+                    allow_partial
+                    and client is not None
+                    and bool(unresolved)
+                    and task["video_id"] is None
+                    and len(task["courses"]) == 1
+                    and task["courses"][0]["type"] == "ai"
+                    and all(
+                        item.get("knowledge_id")
+                        and item.get("course_id") == task["courses"][0]["id"]
+                        for item in unresolved
+                    )
+                )
+                if needs_verification and not partial:
                     task.update(
                         status="pending",
                         error="试卷已有提交检查点，等待查询提交及评分状态，确认前不会重复提交",
@@ -438,6 +476,18 @@ class RunJournal:
                 task["attempts"] = task.get("attempts", 0) + 1
                 self._save()
                 started = time.monotonic()
+                previous_blocked = (
+                    getattr(client, "_blocked_ai_knowledge", set()) if client is not None else set()
+                )
+                if client is not None:
+                    client._blocked_ai_knowledge = (
+                        {
+                            (item["course_id"], task["courses"][0]["classId"], item["knowledge_id"])
+                            for item in unresolved
+                        }
+                        if partial
+                        else set()
+                    )
                 try:
                     video_options = (
                         {"reset_video_deadlines": False} if task["video_id"] is not None else {}
@@ -488,6 +538,8 @@ class RunJournal:
                     )
                     raise
                 finally:
+                    if client is not None:
+                        client._blocked_ai_knowledge = previous_blocked
                     task["finished_at"] = timestamp()
                     task["duration_seconds"] = round(time.monotonic() - started, 3)
                     task.setdefault("history", []).append(

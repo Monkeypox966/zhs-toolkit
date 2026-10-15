@@ -7,7 +7,13 @@ from zhs.clients.exam import ExamCtx
 from zhs.clients.materials import PptToTxt
 from zhs.common.crypto import AI_KEY, HOME_KEY
 from zhs.common.logging import logger
-from zhs.common.runtime import OperationFailed, PendingAnswerError, TimeLimitExceeded, course_run
+from zhs.common.runtime import (
+    OperationFailed,
+    PendingAnswerError,
+    SubmissionUncertainError,
+    TimeLimitExceeded,
+    course_run,
+)
 from zhs.common.utils import progressBar
 
 
@@ -491,6 +497,10 @@ class AICourseMixin:
         completed = getattr(self, "_completed_ai_knowledge", set())
         if key in completed:
             return
+        if key in getattr(self, "_blocked_ai_knowledge", set()):
+            raise SubmissionUncertainError(
+                f"知识点 {knowledge.knowledgeId} 的上次提交尚未确认，先继续其他知识点"
+            )
         ppt_conf = aiConfig.get("ppt_processing", {})
         moonShot_conf = ppt_conf.get("moonShot", {})
         # 开始测试部分

@@ -122,10 +122,19 @@ class AutomaticRunnerTests(unittest.TestCase):
             ],
         )
         journal.save()
-        executor = Mock(return_value=TaskSummary(succeeded=["done"]))
+        blocked_seen = []
+
+        def execute(client, *args, **kwargs):
+            blocked_seen.append(set(client._blocked_ai_knowledge))
+            return (
+                TaskSummary(pending=["grading"])
+                if blocked_seen[-1]
+                else TaskSummary(succeeded=["done"])
+            )
+
+        executor = Mock(side_effect=execute)
 
         def recover(client, item):
-            executor.assert_not_called()
             if recover.calls == 0:
                 recover.calls += 1
                 raise SubmissionUncertainError("grading")
@@ -134,7 +143,8 @@ class AutomaticRunnerTests(unittest.TestCase):
         recover.calls = 0
         with patch("zhs.clients.exam.ExamCtx.recover_submission", side_effect=recover):
             self.assertEqual(self.run_plan(journal, executor).exit_code, 0)
-        executor.assert_called_once()
+        self.assertEqual(executor.call_count, 2)
+        self.assertEqual(blocked_seen, [{("1", "2", "3")}, set()])
         self.assertEqual(self.client._completed_ai_knowledge, {("1", "2", "3")})
         self.assertEqual(journal.data["tasks"][0]["submissions"][0]["state"], "reviewed")
 
@@ -155,13 +165,18 @@ class AutomaticRunnerTests(unittest.TestCase):
             ],
         )
         journal.save()
-        executor = Mock()
+
+        def execute(client, *args, **kwargs):
+            self.assertIn(("1", "2", "3"), client._blocked_ai_knowledge)
+            return TaskSummary(pending=["blocked exam"])
+
+        executor = Mock(side_effect=execute)
         with patch(
             "zhs.clients.exam.ExamCtx.recover_submission",
             side_effect=SubmissionUncertainError("not graded"),
         ):
             self.assertEqual(self.run_plan(journal, executor).exit_code, 1)
-        executor.assert_not_called()
+        self.assertEqual(executor.call_count, 6)
         self.assertEqual(journal.data["tasks"][0]["submissions"][0]["state"], "accepted")
 
 
@@ -325,7 +340,27 @@ class AutomaticApplicationTests(unittest.TestCase):
         self.config.save_cookies = False
         self.config.username, self.config.password = "test-user", "test-password"
         self.client.login.side_effect = [requests.Timeout("offline"), None]
-        with patch("time.sleep") as sleep:
+        with patch("zhs.common.control.sleep") as sleep:
             self.assertEqual(self.run_app(["--check"], restored=False), 0)
         self.assertEqual(self.client.login.call_count, 2)
         sleep.assert_called_once_with(30)
+
+    def test_login_as_different_account_does_not_replace_existing_cookie_file(self):
+        journal = RunJournal.create(
+            self.root / "var/runs", [{"id": "1", "type": "ai", "classId": "2"}], {}
+        )
+        journal.data.update(scope="all", status="incomplete")
+        journal.bind_account(self.client.uuid)
+        journal.save()
+        cookie_file = self.root / "cookies.json"
+        cookie_file.write_text("original-cookie-file")
+        self.config.save_cookies = True
+        self.client.login.side_effect = lambda *args, **kwargs: setattr(
+            self.client, "uuid", "other-account"
+        )
+        self.assertEqual(self.run_app([], restored=False), 1)
+        self.assertEqual(cookie_file.read_text(), "original-cookie-file")
+        self.assertEqual(
+            RunJournal.load(self.root / "var/runs").data["automation"]["state"],
+            "authentication_required",
+        )

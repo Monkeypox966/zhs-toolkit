@@ -3,13 +3,13 @@ import hashlib
 import json
 import re
 import string
-import time
 from random import choice as random_choice
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
 import tiktoken
 
+from zhs.common.control import check_stop, sleep
 from zhs.common.logging import logger
 from zhs.common.transport import create_session
 
@@ -49,6 +49,7 @@ class Openai:
         """解析 stream 响应"""
         cache = ""
         for line in response.iter_lines():
+            check_stop()
             if not line:
                 continue
 
@@ -98,6 +99,7 @@ class Openai:
         }
 
         for attempt in range(max_retries):
+            check_stop()
             try:
                 with self.session.post(
                     url, headers=headers, json=body, timeout=30, stream=self.stream
@@ -116,7 +118,7 @@ class Openai:
             except (requests.exceptions.RequestException, ValueError, KeyError, IndexError) as e:
                 logger.error(f"Completion attempt {attempt + 1} failed: {str(e)}")
                 if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
+                    sleep(retry_delay)
                 else:
                     logger.error("All completion attempts failed, giving up...")
                     raise
@@ -143,6 +145,7 @@ class Openai:
         url, body = self.__zhidaoSign(base_url, body)
 
         for attempt in range(max_retries):
+            check_stop()
             try:
                 with self.session.post(url, json=body, timeout=30, stream=self.stream) as response:
                     response.raise_for_status()
@@ -160,7 +163,7 @@ class Openai:
             except (requests.exceptions.RequestException, ValueError, KeyError, IndexError) as e:
                 logger.error(f"Completion attempt {attempt + 1} failed: {str(e)}")
                 if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
+                    sleep(retry_delay)
                 else:
                     logger.error("All completion attempts failed, giving up...")
                     raise

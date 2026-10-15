@@ -13,10 +13,12 @@ import requests
 from zhs.clients.ai import Openai
 from zhs.common.checkpoints import submission_checkpoint
 from zhs.common.contracts import ProtocolError, identifier, sheet_questions, validate_answers
+from zhs.common.control import atomic_operation, check_stop, defer_stop
 from zhs.common.crypto import EXAM_KEY
 from zhs.common.locking import FileLock
 from zhs.common.logging import logger
 from zhs.common.runtime import (
+    AuthenticationError,
     OperationFailed,
     SubmissionUncertainError,
     TimeLimitExceeded,
@@ -327,6 +329,7 @@ class ExamCtx:
 
         return True
 
+    @atomic_operation
     def submitExam(self, triedTimes: int = 0):
         if self._submission_state is not None:
             raise SubmissionUncertainError("本次试卷已尝试提交，请先核对平台状态")
@@ -349,6 +352,15 @@ class ExamCtx:
             KeyError,
             AttributeError,
         ) as error:
+            response = getattr(error, "response", None)
+            status = getattr(response, "status_code", None)
+            if isinstance(error, requests.HTTPError) and status in (401, 403):
+                self._checkpoint_submission("rejected", http_status=status)
+                raise AuthenticationError(
+                    f"试卷 {self.examTestId} 的提交被认证接口拒绝（HTTP {status}），需要重新登录后重试",
+                    status=status,
+                    retryable=True,
+                ) from error
             raise SubmissionUncertainError(
                 f"试卷 {self.examTestId} 的提交结果无法确认，请核对平台状态；不会自动重复提交：{error}"
             ) from error
@@ -518,9 +530,10 @@ class ExamCtx:
 
         # 提交考试
         self.fucker._checkTimeLimit(self.courseId)
-        self.submitExam()
-
-        return self._read_exam_result(sheetContent)
+        check_stop()
+        with defer_stop():
+            self.submitExam()
+            return self._read_exam_result(sheetContent)
 
     def _read_exam_result(self, sheetContent):
         # 重新取得试卷内容，检查是否答对了，并更新答案缓存
