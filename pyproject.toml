@@ -1,0 +1,40 @@
+[project]
+name = "zhs-toolkit"
+version = "0.2.0"
+description = "智慧树课程命令行工具"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.14"
+dependencies = [
+    "openai>=3.31.0",
+    "pillow>=9.1.0",
+    "pycryptodome>=4.0.0",
+    "requests>=2.34.2",
+    "tiktoken>=0.14.0",
+]
+
+[project.scripts]
+zhs = "zhs.app:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[dependency-groups]
+dev = ["ruff==0.17.0"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+cache-dir = "var/cache/ruff"
+extend-exclude = ["var"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.format]
+quote-style = "double"

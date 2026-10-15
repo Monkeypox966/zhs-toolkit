@@ -1,0 +1,42 @@
+{
+  "username": "",
+  "password": "",
+  "qrlogin": true,
+  "save_cookies": true,
+  "proxies": {},
+  "logLevel": "INFO",
+  "tree_view": true,
+  "progressbar_view": true,
+  "qr_extra": {
+    "show_in_terminal": null,
+    "ensure_unicode": false
+  },
+  "image_path": "",
+  "pushplus": {
+    "enable": false,
+    "token": ""
+  },
+  "bark": {
+    "enable": false,
+    "token": "https://example.com/xxxxxxxxx"
+  },
+  "config_version": "1.4.0",
+  "ai": {
+    "enabled": true,
+    "use_zhidao_ai": true,
+    "openai": {
+      "api_base": "https://api.openai.com",
+      "api_key": "",
+      "model_name": "claude-3-5-sonnet-20240620"
+    },
+    "ppt_processing": {
+      "provide_to_ai": false,
+      "moonShot": {
+        "base_url": "https://api.moonshot.cn/v1",
+        "api_key": "",
+        "delete_after_convert": true
+      }
+    },
+    "use_stream": true
+  }
+}

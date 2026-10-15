@@ -1,0 +1,6 @@
+include uv.lock .python-version main.py
+include config/config.example.json
+recursive-include docs *.md
+prune var
+prune .venv
+global-exclude __pycache__ *.py[cod]
