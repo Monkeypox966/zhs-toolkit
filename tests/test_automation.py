@@ -11,8 +11,9 @@ from zhs.app import main
 from zhs.automation import run_until_complete
 from zhs.clients.course import ZHSClient
 from zhs.clients.exam import ExamCtx
+from zhs.common.control import StopRequested
 from zhs.common.models import ObjDict
-from zhs.common.runtime import SubmissionUncertainError, TaskSummary
+from zhs.common.runtime import AuthenticationError, SubmissionUncertainError, TaskSummary
 from zhs.config import DEFAULT_CONFIG
 from zhs.journal import RunJournal
 from zhs.workflow import execute_tasks
@@ -263,7 +264,11 @@ class AutomaticApplicationTests(unittest.TestCase):
         with (
             patch("zhs.config.load_config", return_value=self.config),
             patch("zhs.clients.course.ZHSClient", return_value=self.client),
-            patch("zhs.app.restore_cookies", return_value=restored),
+            patch(
+                "zhs.app.restore_cookies",
+                side_effect=restored if isinstance(restored, list) else None,
+                return_value=restored,
+            ),
             patch("zhs.common.utils.getRealPath", side_effect=lambda name: str(self.root / name)),
             patch("builtins.print"),
         ):
@@ -300,11 +305,131 @@ class AutomaticApplicationTests(unittest.TestCase):
         self.assertEqual(loaded.data["id"], journal.data["id"])
         self.assertEqual([task["attempts"] for task in loaded.data["tasks"]], [1, 2])
 
-    def test_unattended_login_uses_credentials_without_input_or_qr(self):
-        self.config.save_cookies = False
+    def test_default_command_resumes_after_keyboard_interrupt_without_resume_flag(self):
+        self.client.fuckAiCourse.side_effect = [KeyboardInterrupt(), None]
+        self.assertEqual(self.run_app([]), 130)
+        interrupted = RunJournal.load(self.root / "var/runs")
+        self.assertEqual(interrupted.data["interruption"]["kind"], "keyboard_interrupt")
+        self.assertTrue(interrupted.data["interruption"]["location"])
+        self.assertTrue(interrupted.data["tasks"][0]["error"])
+        self.assertEqual(self.run_app([]), 0)
+        finished = RunJournal.load(self.root / "var/runs")
+        self.assertEqual(finished.data["id"], interrupted.data["id"])
+        self.assertEqual(finished.data["tasks"][0]["attempts"], 2)
+        self.assertEqual(finished.data["status"], "finished")
+
+    def test_default_resumes_video_plan_then_discovers_remaining_course_content(self):
+        journal = RunJournal.create(
+            self.root / "var/runs",
+            [{"id": "1", "type": "ai", "classId": "2"}],
+            {},
+            videos=["v1", "v2"],
+        )
+        journal.data.update(scope="selected", status="interrupted")
+        journal.data["tasks"][0].update(status="succeeded", attempts=1)
+        journal.data["tasks"][1].update(status="interrupted", attempts=1)
+        journal.bind_account(self.client.uuid)
+        journal.save()
+        with patch("zhs.automation.sleep"):
+            self.assertEqual(self.run_app([]), 0)
+        self.client.fuckVideo.assert_called_once_with("1", "v2", course_type="ai", class_id="2")
+        self.client.fuckAiCourse.assert_called_once()
+        finished = RunJournal.load(self.root / "var/runs")
+        self.assertEqual(finished.data["id"], journal.data["id"])
+        self.assertEqual(len(finished.data["tasks"]), 3)
+        self.assertEqual(finished.data["scope"], "all")
+        self.assertEqual(finished.data["status"], "finished")
+
+    def test_default_expired_login_automatically_uses_qr_and_resumes(self):
         self.config.username, self.config.password = "test-user", "test-password"
         self.config.qrlogin = True
-        self.assertEqual(self.run_app(["--check"], restored=False), 0)
+        self.assertEqual(self.run_app([], restored=[False, True]), 0)
+        self.client.login.assert_called_once()
+        self.assertTrue(self.client.login.call_args.kwargs["use_qr"])
+        self.assertTrue(callable(self.client.login.call_args.kwargs["qr_callback"]))
+        self.client.fuckAiCourse.assert_called_once()
+
+    def test_password_rejection_automatically_switches_to_qr(self):
+        self.config.qrlogin = False
+        self.client.login.side_effect = [AuthenticationError("rejected", status=-1), None]
+        self.assertEqual(self.run_app([], restored=[False, True]), 0)
+        self.assertEqual(self.client.login.call_count, 2)
+        self.assertFalse(self.client.login.call_args_list[0].kwargs.get("use_qr", False))
+        self.assertTrue(self.client.login.call_args_list[1].kwargs["use_qr"])
+        self.client.fuckAiCourse.assert_called_once()
+
+    def test_windows_default_opens_qr_window_without_extra_arguments(self):
+        def login(**kwargs):
+            kwargs["qr_callback"](b"test-qr")
+
+        self.client.login.side_effect = login
+        with (
+            patch("platform.system", return_value="Windows"),
+            patch("zhs.common.utils.showImage") as display,
+        ):
+            self.assertEqual(self.run_app([], restored=[False, True]), 0)
+        display.assert_called_once_with(b"test-qr", show_in_terminal=False, ensure_unicode=False)
+
+    def test_missing_credentials_automatically_switches_to_qr_without_input(self):
+        self.config.qrlogin = False
+        self.config.username = self.config.password = ""
+        with patch("builtins.input") as ask:
+            self.assertEqual(self.run_app([], restored=[False, True]), 0)
+        ask.assert_not_called()
+        self.client.login.assert_called_once()
+        self.assertTrue(self.client.login.call_args.kwargs["use_qr"])
+
+    def test_login_expiring_during_course_recovers_with_qr_in_same_command(self):
+        self.client.fuckAiCourse.side_effect = [requests.Timeout("expired connection"), None]
+        with patch("zhs.automation.sleep"):
+            self.assertEqual(self.run_app([], restored=[True, True, False]), 0)
+        self.client.login.assert_called_once()
+        self.assertTrue(self.client.login.call_args.kwargs["use_qr"])
+        journal = RunJournal.load(self.root / "var/runs")
+        self.assertEqual(journal.data["tasks"][0]["attempts"], 2)
+        self.assertEqual(journal.data["status"], "finished")
+
+    def test_wrong_qr_account_requests_new_qr_and_preserves_existing_task(self):
+        journal = RunJournal.create(
+            self.root / "var/runs", [{"id": "1", "type": "ai", "classId": "2"}], {}
+        )
+        journal.data.update(scope="all", status="incomplete")
+        journal.bind_account(self.client.uuid)
+        journal.save()
+        accounts = iter(["other-account", "test-account"])
+        self.client.login.side_effect = lambda **kwargs: setattr(
+            self.client, "uuid", next(accounts)
+        )
+        self.assertEqual(self.run_app([], restored=[False, True]), 0)
+        self.assertEqual(self.client.login.call_count, 2)
+        loaded = RunJournal.load(self.root / "var/runs")
+        self.assertEqual(loaded.data["id"], journal.data["id"])
+        self.assertEqual(loaded.data["status"], "finished")
+
+    def test_explicit_no_qr_reports_rejected_credentials_without_prompt(self):
+        self.client.login.side_effect = AuthenticationError("rejected", status=-1)
+        self.assertEqual(self.run_app(["--no-qrlogin"], restored=False), 1)
+        self.client.login.assert_called_once()
+        self.assertFalse(self.client.login.call_args.kwargs.get("use_qr", False))
+
+    def test_stop_while_waiting_for_qr_preserves_resumable_plan(self):
+        journal = RunJournal.create(
+            self.root / "var/runs", [{"id": "1", "type": "ai", "classId": "2"}], {}
+        )
+        journal.data.update(scope="all", status="incomplete")
+        journal.bind_account(self.client.uuid)
+        journal.save()
+        self.client.login.side_effect = StopRequested("stop")
+        self.assertEqual(self.run_app([], restored=False), 0)
+        loaded = RunJournal.load(self.root / "var/runs")
+        self.assertEqual(loaded.data["automation"]["state"], "stopped")
+        self.assertEqual(loaded.data["interruption"]["kind"], "stop_request")
+        self.client.fuckAiCourse.assert_not_called()
+
+    def test_explicit_password_login_remains_available(self):
+        self.config.save_cookies = False
+        self.config.username, self.config.password = "test-user", "test-password"
+        self.assertEqual(self.run_app(["--check", "--no-qrlogin"], restored=False), 0)
         self.client.login.assert_called_once_with("test-user", "test-password", interactive=False)
 
     def test_repeated_explicit_course_command_reuses_matching_unfinished_plan(self):
@@ -338,6 +463,7 @@ class AutomaticApplicationTests(unittest.TestCase):
 
     def test_initial_login_network_failure_retries_automatically(self):
         self.config.save_cookies = False
+        self.config.qrlogin = False
         self.config.username, self.config.password = "test-user", "test-password"
         self.client.login.side_effect = [requests.Timeout("offline"), None]
         with patch("zhs.common.control.sleep") as sleep:
@@ -358,7 +484,7 @@ class AutomaticApplicationTests(unittest.TestCase):
         self.client.login.side_effect = lambda *args, **kwargs: setattr(
             self.client, "uuid", "other-account"
         )
-        self.assertEqual(self.run_app([], restored=False), 1)
+        self.assertEqual(self.run_app(["--no-qrlogin"], restored=False), 1)
         self.assertEqual(cookie_file.read_text(), "original-cookie-file")
         self.assertEqual(
             RunJournal.load(self.root / "var/runs").data["automation"]["state"],

@@ -287,6 +287,7 @@ class RunJournal:
             known = {
                 (course["type"], course["id"], course.get("classId"))
                 for task in self.data["tasks"]
+                if task["video_id"] is None
                 for course in task["courses"]
             }
             used_ids = {task["id"] for task in self.data["tasks"]}
@@ -533,7 +534,12 @@ class RunJournal:
                         status="interrupted"
                         if isinstance(error, (KeyboardInterrupt, SystemExit))
                         else "failed",
-                        error=str(error),
+                        error=str(error)
+                        or (
+                            "收到运行中断信号；下次直接运行 uv run zhs 将自动继续"
+                            if isinstance(error, (KeyboardInterrupt, SystemExit))
+                            else type(error).__name__
+                        ),
                         error_type=type(error).__name__,
                     )
                     raise
@@ -571,7 +577,7 @@ class RunJournal:
                     "interrupted",
                 }:
                     aggregate.failed.append(
-                        f"任务 {task['id']} 仍为 {task['status']}，请使用 --resume"
+                        f"任务 {task['id']} 仍为 {task['status']}，下次运行 uv run zhs 将自动恢复"
                     )
             self.data["status"] = (
                 "incomplete"

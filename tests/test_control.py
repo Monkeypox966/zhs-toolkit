@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -69,7 +70,12 @@ class ControlTests(unittest.TestCase):
 
         def cleanup():
             if process.poll() is None:
-                process.kill()
+                # Windows venv python may be a launcher with a separate worker.
+                # Let the actual owner release its lock before killing a wrapper.
+                (self.root / "release").write_text("finish")
+                stop_runner(self.locks, timeout=5)
+                if process.poll() is None:
+                    process.wait(timeout=5)
             process.communicate(timeout=10)
 
         self.addCleanup(cleanup)
@@ -188,7 +194,8 @@ class ControlTests(unittest.TestCase):
     def test_crashed_runner_metadata_is_cleaned_using_os_lock(self):
         worker = self.launch()
         self.wait_for("started")
-        worker.kill()
+        owner = json.loads((self.locks / "runner.json").read_text())
+        os.kill(owner["pid"], signal.SIGTERM)
         worker.wait(timeout=5)
         self.assertFalse(stop_runner(self.locks))
         self.assertFalse((self.locks / "runner.json").exists())

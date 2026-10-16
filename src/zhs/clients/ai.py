@@ -7,7 +7,6 @@ from random import choice as random_choice
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
-import tiktoken
 
 from zhs.common.control import check_stop, sleep
 from zhs.common.logging import logger
@@ -37,8 +36,6 @@ class Openai:
         if proxies is not None:
             self.session.proxies.update(proxies)
         self.useZhidao = useZhidao
-
-        self.encoder = tiktoken.encoding_for_model("gpt-4")
 
         self.prefix = "8ZflKEagfL"
 
@@ -274,14 +271,12 @@ class Openai:
         return self._baseTemplate(question, choices, referenceMaterials or [], "判断题")
 
     def generateAnswer(self, prompt: str) -> list:
-        tokens = self.encoder.encode(prompt)
-
-        # 如果大于32ktoken，取后32ktoken
-        if len(tokens) > 27_900:
-            tokens = tokens[-27_900:]
-
-            prompt = self.encoder.decode(tokens)
-            logger.warning(f"Prompt is too long, truncated to {len(tokens)} tokens")
+        # A conservative byte budget needs no remote tokenizer assets. Keep the
+        # question and options at the end, dropping older reference material first.
+        encoded = prompt.encode("utf-8")
+        if len(encoded) > 27_900:
+            prompt = encoded[-27_900:].decode("utf-8", errors="ignore")
+            logger.warning("参考文本较长，已按本地 UTF-8 字节预算截取末尾内容")
         if self.useZhidao:
             aicompletion = self.zhiDaoCompletion(prompt)
         else:

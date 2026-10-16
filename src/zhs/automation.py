@@ -1,10 +1,30 @@
 """Keep unfinished tasks moving, with cooling-off and read-only submission recovery."""
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from traceback import extract_tb
 
-from zhs.common.control import check_stop, sleep
+from zhs.common.control import StopRequested, check_stop, sleep
 from zhs.common.logging import logger
 from zhs.common.runtime import AuthenticationError, TaskSummary
+
+
+def record_interruption(journal, error):
+    """Record where interruption surfaced without claiming who generated SIGINT."""
+    journal.data["status"] = "interrupted"
+    journal.data.setdefault("automation", {}).update(
+        state="stopped", retry_in_seconds=None, next_retry_at=None
+    )
+    journal.data["interruption"] = {
+        "kind": "stop_request" if isinstance(error, StopRequested) else "keyboard_interrupt",
+        "error_type": type(error).__name__,
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "location": [
+            {"file": Path(frame.filename).name, "function": frame.name, "line": frame.lineno}
+            for frame in extract_tb(error.__traceback__)[-8:]
+        ],
+    }
+    journal.save()
 
 
 def record_recovery_error(journal, error, round_number=0, delay=30, terminal=False):

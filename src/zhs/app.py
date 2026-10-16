@@ -26,6 +26,7 @@ def restore_cookies(client, path):
     import requests
 
     from zhs.common.logging import logger
+    from zhs.common.runtime import AuthenticationError
 
     if not Path(path).exists():
         return False
@@ -46,6 +47,8 @@ def restore_cookies(client, path):
                     atomic_write_json(path, cookie_jar_to_list(client.cookies))
                     print("已通过现有 SSO 会话自动刷新登录态")
                     return True
+            except AuthenticationError:
+                pass
             except requests.RequestException as refresh_error:
                 if getattr(getattr(refresh_error, "response", None), "status_code", None) not in (
                     401,
@@ -96,12 +99,14 @@ def main(argv=None):
         with managed_runner(
             getRealPath("var/locks"), replace=not (args.check or args.fetch or args.dry_run)
         ):
+            if not (args.check or args.fetch or args.dry_run or args.once):
+                print("正在启动：自动检查登录、恢复进度并处理未完成内容。", flush=True)
             return run_application(args)
     except StopRequested:
-        print("已按停止命令退出；再次执行 uv run zhs 可继续")
+        print("\n已响应停止请求并保存状态；下次直接运行 uv run zhs 将自动继续。", flush=True)
         return 0
     except KeyboardInterrupt:
-        print("用户已中断；已建立的任务记录可用 --resume 继续")
+        print("\n收到运行中断信号，进度已保存；下次直接运行 uv run zhs 将自动继续。", flush=True)
         return 130
     except Exception as error:
         print(f"运行失败：{error}")
@@ -128,7 +133,7 @@ def run_application(args):
     from functools import partial
     from pathlib import Path
 
-    from zhs.automation import record_recovery_error, run_until_complete
+    from zhs.automation import record_interruption, record_recovery_error, run_until_complete
     from zhs.clients.course import ZHSClient
     from zhs.common.control import check_stop, sleep
     from zhs.common.logging import logger
@@ -141,6 +146,7 @@ def run_application(args):
 
     client = None
     journal = None
+    automatically_resumed = False
     try:
         check_stop()
         restart = args.resume or args.retry_failed
@@ -155,12 +161,11 @@ def run_application(args):
             pointer = Path(getRealPath("var/runs")) / "latest.json"
             if pointer.exists():
                 previous_run = RunJournal.load(getRealPath("var/runs"))
-                if all(task["video_id"] is None for task in previous_run.data["tasks"]) and (
-                    previous_run.data["status"] != "finished"
-                    or previous_run.data.get("automation", {}).get("state")
-                    in {"running", "waiting"}
-                ):
+                if previous_run.data["status"] != "finished" or previous_run.data.get(
+                    "automation", {}
+                ).get("state") in {"running", "waiting"}:
                     journal = previous_run
+                    automatically_resumed = True
                     journal.data["scope"] = "all"
         previous = journal.data["options"] if journal else {}
         settings = {
@@ -177,7 +182,7 @@ def run_application(args):
         qr_config = config.qr_extra
         show_in_terminal = option(args.show_in_terminal, qr_config.show_in_terminal)
         if show_in_terminal is None:
-            show_in_terminal = platform.system() == "Windows"
+            show_in_terminal = platform.system() not in {"Windows", "Darwin"}
         client = ZHSClient(
             proxies=proxies,
             speed=settings["speed"],
@@ -191,6 +196,7 @@ def run_application(args):
             cache_policy=config.cache,
         )
         cookies_path = getRealPath("cookies.json")
+        qr_required = option(args.qrlogin, config.qrlogin)
 
         def verify_account():
             if journal is not None:
@@ -200,22 +206,49 @@ def run_application(args):
                     raise AuthenticationError(str(error)) from error
 
         def authenticate():
+            nonlocal qr_required
             check_stop()
             if config.save_cookies and restore_cookies(client, cookies_path):
                 verify_account()
                 return
             username, password = args.username or config.username, args.password or config.password
-            if not args.once and args.qrlogin is not True:
-                client.login(username, password, interactive=False)
-            elif option(args.qrlogin, config.qrlogin):
+            if not qr_required:
+                if not username or not password:
+                    if args.qrlogin is False:
+                        raise AuthenticationError(
+                            "未配置账号密码；省略 --no-qrlogin 可自动扫码登录"
+                        )
+                    qr_required = True
+                else:
+                    try:
+                        client.login(username, password, interactive=False)
+                    except AuthenticationError:
+                        if args.qrlogin is False:
+                            raise
+                        print("账号登录未成功，正在自动切换扫码登录……")
+                        qr_required = True
+            if qr_required:
+                print("需要重新登录，请使用智慧树 App 扫描二维码并确认；登录后将自动继续。")
                 callback = partial(
                     showImage,
                     show_in_terminal=show_in_terminal,
                     ensure_unicode=qr_config.ensure_unicode,
                 )
-                client.login(use_qr=True, qr_callback=callback)
-            else:
-                client.login(username, password, interactive=args.once)
+                while True:
+                    client.login(use_qr=True, qr_callback=callback)
+                    try:
+                        verify_account()
+                    except AuthenticationError:
+                        print("扫码账号与原任务不一致，请使用原账号重新扫码。")
+                        client.cookies = {}
+                        client.session.cookies.clear()
+                        client.courses.clear()
+                        continue
+                    # Verify actual course access before replacing saved login state.
+                    client.courses.clear()
+                    client.getZhidaoList()
+                    break
+                print("扫码登录成功，正在继续原任务。")
             verify_account()
             if config.save_cookies:
                 atomic_write_json(cookies_path, cookie_jar_to_list(client.cookies))
@@ -298,6 +331,8 @@ def run_application(args):
             journal.data["options"] = settings
         journal.bind_account(client.uuid)
         journal.save()
+        if automatically_resumed:
+            print("已自动恢复上次未完成任务，保留已完成结果和缓存。", flush=True)
         if args.report:
             # Publish the plan first: a broken report destination must fail
             # before any course task starts.
@@ -345,11 +380,7 @@ def run_application(args):
         return summary.exit_code
     except BaseException as error:
         if isinstance(error, KeyboardInterrupt) and journal is not None:
-            journal.data["status"] = "interrupted"
-            journal.data.setdefault("automation", {}).update(
-                state="stopped", retry_in_seconds=None, next_retry_at=None
-            )
-            journal.save()
+            record_interruption(journal, error)
         if isinstance(error, Exception):
             logger.exception(error)
         if journal is not None and args.report:

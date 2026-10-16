@@ -130,7 +130,13 @@ class WorkflowTests(unittest.TestCase):
                     "zhs.common.utils.getRealPath",
                     side_effect=lambda name: str(Path(directory) / name),
                 ),
-                patch("builtins.print"),
+                patch("builtins.print") as output,
             ):
                 self.assertEqual(main(["-c", "1"]), 130)
+                messages = "\n".join(
+                    str(call.args[0]) for call in output.call_args_list if call.args
+                )
+                self.assertIn("下次直接运行 uv run zhs", messages)
+                self.assertNotIn("--resume", messages)
+                self.assertNotIn("用户已中断", messages)
         client.close.assert_called_once()

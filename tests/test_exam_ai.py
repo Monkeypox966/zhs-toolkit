@@ -240,15 +240,27 @@ class ExamAiTests(unittest.TestCase):
             self.assertEqual(second._submission_state, "reviewed")
         self.assertEqual(self.client.zhidaoAiExamQuery.call_count, 2)
 
-    def test_long_prompt_uses_integer_slice(self):
-        client = Openai.__new__(Openai)
-        client.encoder = Mock()
-        client.encoder.encode.return_value = list(range(28001))
-        client.encoder.decode.return_value = "truncated"
-        client.useZhidao = False
+    def test_long_prompt_is_bounded_without_tokenizer_or_remote_download(self):
+        with patch("requests.get", side_effect=AssertionError("unexpected asset download")):
+            client = Openai()
+            self.addCleanup(client.close)
+            client.openaiCompletion = Mock(
+                return_value='```answer\n[{"id": 1, "content": "x"}]\n```'
+            )
+            prompt = "长参考资料😀" * 10000 + "问题和选项必须保留"
+            self.assertEqual(client.generateAnswer(prompt), [1])
+        sent = client.openaiCompletion.call_args.args[0]
+        self.assertLessEqual(len(sent.encode("utf-8")), 27900)
+        self.assertTrue(sent.endswith("问题和选项必须保留"))
+        self.assertNotIn("\ufffd", sent)
+
+    def test_short_prompt_is_preserved_without_tokenizer(self):
+        client = Openai()
+        self.addCleanup(client.close)
         client.openaiCompletion = Mock(return_value='```answer\n[{"id": 1, "content": "x"}]\n```')
-        self.assertEqual(client.generateAnswer("long input"), [1])
-        self.assertEqual(len(client.encoder.decode.call_args.args[0]), 27900)
+        prompt = "短问题 <|endoftext|>"
+        self.assertEqual(client.generateAnswer(prompt), [1])
+        client.openaiCompletion.assert_called_once_with(prompt)
 
     def test_stream_handles_empty_choices_and_done(self):
         client = Openai.__new__(Openai)

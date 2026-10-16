@@ -5,7 +5,7 @@ import os
 import sys
 from datetime import timedelta
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageShow
 from requests.cookies import RequestsCookieJar, create_cookie
 
 from zhs.paths import application_home, config_path, resolve_path
@@ -26,11 +26,17 @@ def showImage(img, show_in_terminal=False, ensure_unicode=False):
         else:
             terminalShowImage_tty(img)
     else:
-        import threading
-
-        img = Image.open(io.BytesIO(img))
-        threading.Thread(target=img.show, daemon=True).start()
-    print("Scan QR code")
+        try:
+            displayed = ImageShow.show(Image.open(io.BytesIO(img)))
+        except OSError, RuntimeError:
+            displayed = False
+        if not displayed:
+            print("无法打开图片窗口，已改为在终端显示二维码。")
+            if ensure_unicode:
+                terminalShowImage_unicode(img)
+            else:
+                terminalShowImage_tty(img)
+    print("请使用智慧树 App 扫码登录；二维码过期后会自动刷新。")
 
 
 def terminalShowImage_unicode(img):
@@ -139,7 +145,7 @@ def progressBar(
     bar_len = length - len(prefix) - len(suffix)
     filled_len = int(bar_len * iteration // total)
     bar = fill * filled_len + " " * (bar_len - filled_len)
-    print(f"\r{prefix}{bar}{suffix}", end="\r")
+    print(f"\r{prefix}{bar}{suffix}", end="\r", flush=True)
     if iteration >= total:
         wipeLine()
 

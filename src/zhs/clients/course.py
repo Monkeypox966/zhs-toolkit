@@ -231,13 +231,16 @@ class ZHSClient(SharedCourseMixin, CampusCourseMixin, AICourseMixin):
             raise
         return True
 
-    def _qrlogin(self, qr_callback, max_attempts=3):
-        """Refresh expired QR codes without unbounded recursion."""
+    def _qrlogin(self, qr_callback, max_attempts=0):
+        """Refresh QR codes until login or stop; zero attempts means no expiry limit."""
         login_page = "https://passport.zhihuishu.com/login?service=https://onlineservice-api.zhihuishu.com/login/gologin"
         qr_page = "https://passport.zhihuishu.com/qrCodeLogin/getLoginQrImg"
         query_page = "https://passport.zhihuishu.com/qrCodeLogin/getLoginQrInfo"
         self._sessionReady()
-        for attempt in range(max_attempts):
+        attempt = 0
+        while not max_attempts or attempt < max_attempts:
+            check_stop()
+            attempt += 1
             with self.session.get(qr_page, timeout=10) as response:
                 response.raise_for_status()
                 data = response.json()
@@ -250,6 +253,7 @@ class ZHSClient(SharedCourseMixin, CampusCourseMixin, AICourseMixin):
             qr_callback(image)
             logger.debug(f"QR login received, token{qr_token}")
             scanned = False
+            canceled = False
             deadline = time.monotonic() + 180
             while time.monotonic() < deadline:
                 sleep(0.5, self._stop_event)
@@ -262,7 +266,7 @@ class ZHSClient(SharedCourseMixin, CampusCourseMixin, AICourseMixin):
                     continue
                 if message.status == 0:
                     if not scanned:
-                        print("QR Scanned")
+                        print("二维码已扫描，请在手机上确认登录。")
                         scanned = True
                 elif message.status == 1:
                     with self.session.get(
@@ -279,10 +283,13 @@ class ZHSClient(SharedCourseMixin, CampusCourseMixin, AICourseMixin):
                 elif message.status == 2:
                     break
                 elif message.status == 3:
-                    raise RuntimeError("Login canceled")
+                    canceled = True
+                    print("本次扫码已取消，正在刷新二维码……")
+                    break
                 else:
                     raise RuntimeError(f"Unknown QR response: {message.msg}")
-            print(f"QR code expired ({attempt + 1}/{max_attempts})")
+            if not canceled:
+                print("二维码已过期，正在自动刷新……")
         raise TimeLimitExceeded(f"QR login expired after {max_attempts} attempts")
 
     def fuckWhatever(self, aiConfig=None, no_exam=False):

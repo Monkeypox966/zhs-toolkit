@@ -133,6 +133,16 @@ class AuthenticationTests(unittest.TestCase):
         self.client.login.assert_not_called()
         self.assertEqual(self.client.getZhidaoList.call_count, 2)
 
+    def test_rejected_sso_session_allows_fresh_qr_login(self):
+        self.client.cookies = {"CASLOGC": json.dumps({"uuid": "test-uuid"})}
+        self.client.getZhidaoList = Mock(side_effect=http_error(401))
+        self.client.refresh_login = Mock(side_effect=AuthenticationError("SSO account mismatch"))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "cookies.json"
+            atomic_write_json(path, cookie_jar_to_list(self.client.cookies))
+            self.assertFalse(restore_cookies(self.client, path))
+        self.assertIsNone(self.client.uuid)
+
     def test_definitive_401_submission_is_rejected_instead_of_awaiting_grades(self):
         self.client.zhidaoAiExamQuery = Mock(side_effect=http_error(401))
         exam = ExamCtx(self.client, 1, 2, 3, 4, aiConfig={})
