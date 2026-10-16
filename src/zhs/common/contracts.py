@@ -1,8 +1,38 @@
 """Validate platform payloads before they become executable work."""
 
+import math
+
 
 class ProtocolError(ValueError):
     pass
+
+
+def ai_resource_is_video(resource):
+    detail = resource.get("resourcesDetail") or {}
+    return (detail.get("resourcesType"), detail.get("resourcesDistributeType")) in {
+        (1, 3),
+        (2, 2),
+    }
+
+
+def ai_resource_complete(resource):
+    """Trust the platform's completion flag; its video rule is over 80%, not 100%."""
+    if not isinstance(resource, dict) or not isinstance(resource.get("resourcesDetail"), dict):
+        raise ProtocolError("AI 资源缺少有效详情")
+    status = resource.get("studyStatus")
+    return not isinstance(status, bool) and status == 1
+
+
+def ai_video_resume_at(resource):
+    detail = resource.get("resourcesDetail") or {}
+    value = detail.get("lastWatchTime")
+    if value is None:
+        value = resource.get("studyTotalTime", 0)
+    try:
+        value = float(value)
+    except TypeError, ValueError:
+        return 0
+    return int(value) if math.isfinite(value) and value > 0 else 0
 
 
 def identifier(value, label="id"):

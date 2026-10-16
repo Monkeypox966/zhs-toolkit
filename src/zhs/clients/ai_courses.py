@@ -5,6 +5,7 @@ from random import randint, uniform
 
 from zhs.clients.exam import ExamCtx
 from zhs.clients.materials import PptToTxt
+from zhs.common.contracts import ai_resource_complete, ai_resource_is_video, ai_video_resume_at
 from zhs.common.crypto import AI_KEY, HOME_KEY
 from zhs.common.logging import logger
 from zhs.common.runtime import (
@@ -30,10 +31,7 @@ class AICourseMixin:
                 resources = self.listKnowledgeResources(course_id, class_id, node.knowledgeId)
                 for resource in resources.resourceList or []:
                     detail = resource.resourcesDetail
-                    is_video = (
-                        detail.get("resourcesType"),
-                        detail.get("resourcesDistributeType"),
-                    ) in ((1, 3), (2, 2))
+                    is_video = ai_resource_is_video(resource)
                     if is_video and str(detail.get("resourcesFileId", "")) == str(video_id):
                         matches.append(node.knowledgeId)
         matches = list(dict.fromkeys(matches))
@@ -98,7 +96,7 @@ class AICourseMixin:
         lastWatchTime: int,
         studyTotalTime: int = 10,
         shareCourseId: str = "",
-        nodeType: int = 0,
+        nodeType: int = None,
         watchUId: int = 1,
     ):
         """
@@ -117,7 +115,7 @@ class AICourseMixin:
             "lastWatchTime": lastWatchTime,
             "studyTotalTime": studyTotalTime,
             "shareCourseId": shareCourseId,
-            "nodeType": nodeType,
+            "nodeType": (1 if knowledgeId else 0) if nodeType is None else nodeType,
             "watchUId": watchUId,
             "dateFormate": now,
         }
@@ -298,7 +296,7 @@ class AICourseMixin:
                         # 判断资源类型
                         resourceType = resource.resourcesDetail.resourcesType
                         resourceDistributeType = resource.resourcesDetail.resourcesDistributeType
-                        if resource.studyStatus == 1:  # already fucked
+                        if ai_resource_complete(resource):
                             tprint(prefix * 4)
                             tprint(f"{prefix * 4}__Resource already fucked")
 
@@ -353,6 +351,7 @@ class AICourseMixin:
                                     resource.resourcesDetail.resourcesFileId,
                                     knowledge.knowledgeId,
                                     1,
+                                    startAt=ai_video_resume_at(resource),
                                 )
                                 tprint(prefix * 4)
                                 tprint(
@@ -378,6 +377,7 @@ class AICourseMixin:
                                     resource.resourcesDetail.resourcesFileId,
                                     knowledge.knowledgeId,
                                     1,
+                                    startAt=ai_video_resume_at(resource),
                                 )
                                 tprint(prefix * 4)
                                 tprint(
@@ -477,7 +477,8 @@ class AICourseMixin:
 
         tprint(prefix)  # extra line as separator
         tprint(
-            f"{prefix}__{self._course_status()} Zhidao AI course {knowledgePoints.courseName} in {time.time() - begin_time:.2f}s"
+            f"{prefix}__AI 课程本轮处理结束：{knowledgePoints.courseName}，"
+            f"耗时 {time.time() - begin_time:.2f}s；正在核对最终结果"
         )
 
     def _complete_ai_exams(

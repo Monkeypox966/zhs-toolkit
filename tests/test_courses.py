@@ -61,6 +61,14 @@ class VideoTests(unittest.TestCase):
         with self.assertRaises(OperationFailed):
             self.client.reportAiVideoProcess(1, 2, 3, 4, 5)
 
+    def test_ai_knowledge_reporting_uses_platform_node_type(self):
+        self.client._checkCookies = Mock()
+        self.client._sessionReady = Mock()
+        self.client.zhidaoQuery = Mock()
+        self.client.reportAiVideoProcess(1, 2, 3, 4, 5)
+        payload = self.client.zhidaoQuery.call_args.args[1]
+        self.assertEqual(payload["nodeType"], 1)
+
     def ai_knowledge(self, progress=100):
         self.client._sleep = Mock()
         self.client.getAiKnowlegePoints = Mock(
@@ -191,6 +199,60 @@ class VideoTests(unittest.TestCase):
         self.client.fuckAiVideo = Mock(side_effect=RuntimeError("report failed"))
         with self.assertRaises(OperationFailed):
             self.client.fuckAiCourse(1, 2, {}, no_exam=True)
+
+    def test_ai_unfinished_video_resumes_remaining_playback(self):
+        for kind, distribution in ((1, 3), (2, 2)):
+            with self.subTest(kind=kind):
+                self.ai_knowledge(progress=0)
+                self.client.listKnowledgeResources = Mock(
+                    return_value=ObjDict(
+                        {
+                            "resourceList": [
+                                {
+                                    "studyStatus": 0,
+                                    "studyTotalTime": 390,
+                                    "schedule": 81,
+                                    "resourcesDetail": {
+                                        "resourcesName": "partial video",
+                                        "resourcesType": kind,
+                                        "resourcesDistributeType": distribution,
+                                        "resourcesFileId": 5,
+                                        "resourcesTime": "481",
+                                    },
+                                }
+                            ]
+                        }
+                    )
+                )
+                self.client.fuckAiVideo = Mock()
+                self.client.fuckAiCourse(1, 2, {}, no_exam=True)
+                self.client.fuckAiVideo.assert_called_once_with(1, 2, 5, 1, 1, startAt=390)
+
+    def test_ai_full_video_is_not_replayed_when_aggregate_is_zero(self):
+        self.ai_knowledge(progress=0)
+        self.client.listKnowledgeResources = Mock(
+            return_value=ObjDict(
+                {
+                    "resourceList": [
+                        {
+                            "studyStatus": 1,
+                            "studyTotalTime": 481,
+                            "schedule": 100,
+                            "resourcesDetail": {
+                                "resourcesName": "done video",
+                                "resourcesType": 1,
+                                "resourcesDistributeType": 3,
+                                "resourcesFileId": 5,
+                                "resourcesTime": "481",
+                            },
+                        }
+                    ]
+                }
+            )
+        )
+        self.client.fuckAiVideo = Mock()
+        self.client.fuckAiCourse(1, 2, {}, no_exam=True)
+        self.client.fuckAiVideo.assert_not_called()
 
     def test_ai_playback_advances_at_low_speed(self):
         self.client._checkCookies = Mock()

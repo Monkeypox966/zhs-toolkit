@@ -53,6 +53,19 @@ class JournalTests(unittest.TestCase):
         loaded.execute(None, {}, executor)
         self.assertEqual(executor.call_count, 2)
 
+    def test_completion_discrepancy_notice_is_preserved_on_resume(self):
+        journal = self.create()
+        notice = "平台汇总 0%，资源均已标记完成"
+        journal.execute(
+            None, {}, Mock(return_value=TaskSummary(succeeded=["ok"], notices=[notice]))
+        )
+        loaded = RunJournal.load(self.root)
+        self.assertEqual(loaded.data["tasks"][0]["completion_notes"], [notice])
+        executor = Mock()
+        result = loaded.execute(None, {}, executor)
+        executor.assert_not_called()
+        self.assertIn(notice, result.notices)
+
     def test_abandoned_running_task_becomes_interrupted(self):
         journal = self.create()
         journal.data["tasks"][0]["status"] = "running"

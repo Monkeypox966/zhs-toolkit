@@ -4,11 +4,11 @@ import json
 import math
 from pathlib import Path
 
-from zhs.common.contracts import ProtocolError, course_record
+from zhs.common.contracts import ProtocolError, ai_resource_complete, course_record
 from zhs.common.logging import logger
 from zhs.common.runtime import (
+    CourseProgressPending,
     CourseResolutionError,
-    OperationFailed,
     PendingAnswerError,
     TaskSummary,
     TimeLimitExceeded,
@@ -69,7 +69,7 @@ def read_execution(path):
     return [course_record(item) for item in data]
 
 
-def verify_course_completion(client, course):
+def verify_course_completion(client, course, details=None, notices=None):
     """Re-read platform progress instead of trusting a successful write alone."""
 
     def progress_number(value):
@@ -83,6 +83,7 @@ def verify_course_completion(client, course):
 
     kind, course_id = course.get("type"), course["id"]
     if kind == "ai":
+        missing = []
         data = client.getAiKnowlegePoints(course_id, course["classId"])
         themes = data.get("cakeThemeList")
         if not isinstance(themes, list):
@@ -96,8 +97,35 @@ def verify_course_completion(client, course):
                 if isinstance(progress, bool) or not isinstance(progress, (int, float)):
                     raise ProtocolError("知识点进度无效")
                 if progress_number(progress) < 100:
-                    return False
-        return True
+                    name = node.get("knowledgeName") or str(node.get("knowledgeId") or "未知知识点")
+                    if not node.get("knowledgeId"):
+                        missing.append(f"{name}：平台进度 {progress}%")
+                        continue
+                    resources = client.listKnowledgeResources(
+                        course_id, course["classId"], node["knowledgeId"]
+                    )
+                    items = resources.get("resourceList")
+                    if not isinstance(items, list):
+                        raise ProtocolError("知识点资源列表无效")
+                    if not items:
+                        missing.append(f"{name}：平台进度 {progress}%，尚无资源完成证据")
+                    incomplete = False
+                    for item in items:
+                        if not ai_resource_complete(item):
+                            incomplete = True
+                            resource_name = (
+                                item["resourcesDetail"].get("resourcesName") or "未命名资源"
+                            )
+                            missing.append(
+                                f"{name} / {resource_name}：资源进度 {item.get('schedule', '未知')}%"
+                            )
+                    if items and not incomplete and notices is not None:
+                        notices.append(
+                            f"{name}：平台汇总 {progress}%，但 {len(items)} 个资源均已标记完成"
+                        )
+        if details is not None:
+            details.extend(missing)
+        return not missing
     if kind == "zhidao":
         videos = client.getZhidaoContext(course_id, force=True).videos
         return all(
@@ -187,8 +215,17 @@ def execute_tasks(
                 client.fuckHikeCourse(course_id)
             else:
                 client.fuckCourse(course_id, aiConfig=config.get("ai", {}), no_exam=no_exam)
-            if verify_completion and not verify_course_completion(client, course):
-                raise OperationFailed("平台尚未确认全部学习进度，将自动复查并继续未完成内容")
+            missing = []
+            notices = []
+            if verify_completion and not verify_course_completion(
+                client, course, details=missing, notices=notices
+            ):
+                reason = "；".join(missing[:5]) or "平台尚未确认全部学习进度"
+                raise CourseProgressPending(f"{reason}；将自动复查并继续处理")
+            for notice in notices:
+                message = f"{label}: {notice}；按平台资源完成标记核对，未将汇总数字改写为 100%"
+                summary.notices.append(message)
+                print(f"平台进度提示：{message}")
         except TimeLimitExceeded as error:
             summary.skipped.append(f"{label}: {error}")
             print(f"已达到时限：{label}")

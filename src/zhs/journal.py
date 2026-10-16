@@ -144,6 +144,9 @@ class RunJournal:
             if not isinstance(task.get("history", []), list):
                 raise ValueError("任务尝试历史格式无效")
             task.setdefault("history", [])
+            notes = task.get("completion_notes", [])
+            if not isinstance(notes, list) or any(not isinstance(note, str) for note in notes):
+                raise ValueError("任务完成提示格式无效")
             duration = task.get("duration_seconds", 0)
             if (
                 isinstance(duration, bool)
@@ -512,6 +515,8 @@ class RunJournal:
                         result.error_types.insert(0, "SubmissionUncertainError")
                     for field in ("succeeded", "failed", "pending", "skipped"):
                         getattr(aggregate, field).extend(getattr(result, field))
+                    task["completion_notes"] = list(result.notices)
+                    aggregate.notices.extend(result.notices)
                     task["outcomes"] = {
                         field: list(getattr(result, field))
                         for field in ("succeeded", "failed", "pending", "skipped")
@@ -570,6 +575,7 @@ class RunJournal:
                     getattr(aggregate, status).extend(
                         task.get("outcomes", {}).get(status) or [f"任务 {task['id']}"]
                     )
+                    aggregate.notices.extend(task.get("completion_notes", []))
                 if task["id"] not in executed and task["status"] in {
                     "failed",
                     "pending",

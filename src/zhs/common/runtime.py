@@ -35,6 +35,10 @@ class SubmissionUncertainError(PendingAnswerError):
     """A request may have been accepted; automatic resubmission is unsafe."""
 
 
+class CourseProgressPending(PendingAnswerError):
+    """Resource progress still needs work or server confirmation."""
+
+
 class CourseResolutionError(OperationFailed):
     pass
 
@@ -90,6 +94,7 @@ class TaskSummary:
     skipped: list[str] = field(default_factory=list)
     pending: list[str] = field(default_factory=list)
     error_types: list[str] = field(default_factory=list)
+    notices: list[str] = field(default_factory=list)
 
     @property
     def exit_code(self):

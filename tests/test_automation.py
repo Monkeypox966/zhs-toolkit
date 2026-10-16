@@ -16,7 +16,7 @@ from zhs.common.models import ObjDict
 from zhs.common.runtime import AuthenticationError, SubmissionUncertainError, TaskSummary
 from zhs.config import DEFAULT_CONFIG
 from zhs.journal import RunJournal
-from zhs.workflow import execute_tasks
+from zhs.workflow import execute_tasks, verify_course_completion
 
 
 class AutomaticRunnerTests(unittest.TestCase):
@@ -242,6 +242,120 @@ class ReadonlySubmissionTests(unittest.TestCase):
                 client, [course], {"ai": {}}, no_exam=True, verify_completion=True
             ).exit_code,
             0,
+        )
+
+    def test_zero_aggregate_with_completed_external_resources_is_confirmed(self):
+        client = Mock()
+        client.getAiKnowlegePoints.return_value = {
+            "cakeThemeList": [
+                {
+                    "knowledgeList": [
+                        {"studyProgress": 0, "knowledgeId": "k", "knowledgeName": "external-only"},
+                    ]
+                }
+            ]
+        }
+        client.listKnowledgeResources.return_value = {
+            "resourceList": [
+                {
+                    "studyStatus": 1,
+                    "schedule": 0,
+                    "resourcesDetail": {"resourcesType": 1, "resourcesDistributeType": 6},
+                }
+            ]
+        }
+        self.assertTrue(verify_course_completion(client, {"id": "1", "classId": "2", "type": "ai"}))
+
+    def test_partial_video_is_pending_with_specific_resource_name(self):
+        client = Mock()
+        client.getAiKnowlegePoints.return_value = {
+            "cakeThemeList": [
+                {
+                    "knowledgeList": [
+                        {"studyProgress": 0, "knowledgeId": "k", "knowledgeName": "伦巴舞手臂动作"},
+                    ]
+                }
+            ]
+        }
+        resource = {
+            "studyStatus": 0,
+            "schedule": 81,
+            "studyTotalTime": 390,
+            "resourcesDetail": {
+                "resourcesType": 2,
+                "resourcesDistributeType": 2,
+                "resourcesTime": "481",
+                "resourcesName": "伦巴手臂动作",
+            },
+        }
+        client.listKnowledgeResources.return_value = {"resourceList": [resource]}
+        with patch("builtins.print"):
+            result = execute_tasks(
+                client,
+                [{"id": "1", "classId": "2", "type": "ai"}],
+                {"ai": {}},
+                no_exam=True,
+                verify_completion=True,
+            )
+        self.assertFalse(result.failed)
+        self.assertIn("81%", result.pending[0])
+        self.assertIn("伦巴手臂动作", result.pending[0])
+        resource.update(studyStatus=1, schedule=100, studyTotalTime=481)
+        self.assertTrue(verify_course_completion(client, {"id": "1", "classId": "2", "type": "ai"}))
+
+    def test_platform_completed_video_at_81_percent_is_not_retried(self):
+        client = Mock()
+        client.getAiKnowlegePoints.return_value = {
+            "cakeThemeList": [
+                {
+                    "knowledgeList": [
+                        {"studyProgress": 0, "knowledgeId": "k", "knowledgeName": "伦巴舞手臂动作"},
+                    ]
+                }
+            ]
+        }
+        client.listKnowledgeResources.return_value = {
+            "resourceList": [
+                {
+                    "studyStatus": 1,
+                    "schedule": 81,
+                    "studyTotalTime": 390,
+                    "resourcesDetail": {
+                        "resourcesType": 2,
+                        "resourcesDistributeType": 2,
+                        "resourcesTime": "481",
+                        "resourcesName": "伦巴手臂动作",
+                    },
+                }
+            ]
+        }
+        with patch("builtins.print"):
+            result = execute_tasks(
+                client,
+                [{"id": "1", "classId": "2", "type": "ai"}],
+                {"ai": {}},
+                no_exam=True,
+                verify_completion=True,
+            )
+        self.assertEqual(result.exit_code, 0)
+        self.assertFalse(result.pending)
+        self.assertIn("平台汇总 0%", result.notices[0])
+        self.assertIn("资源均已标记完成", result.notices[0])
+
+    def test_empty_resource_list_does_not_confirm_zero_aggregate(self):
+        client = Mock()
+        client.getAiKnowlegePoints.return_value = {
+            "cakeThemeList": [
+                {
+                    "knowledgeList": [
+                        {"studyProgress": 0, "knowledgeId": "k"},
+                    ]
+                }
+            ]
+        }
+        client.listKnowledgeResources.return_value = {"resourceList": []}
+        self.assertFalse(
+            verify_course_completion(client, {"id": "1", "classId": "2", "type": "ai"})
         )
 
 
