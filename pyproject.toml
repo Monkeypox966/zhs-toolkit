@@ -14,9 +14,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Monkeypox966/fuckZHS"
-Repository = "https://github.com/Monkeypox966/fuckZHS"
-Issues = "https://github.com/Monkeypox966/fuckZHS/issues"
+Homepage = "https://github.com/Monkeypox966/zhs-toolkit"
+Repository = "https://github.com/Monkeypox966/zhs-toolkit"
+Issues = "https://github.com/Monkeypox966/zhs-toolkit/issues"
 Upstream = "https://github.com/VermiIIi0n/fuckZHS"
 
 [project.scripts]

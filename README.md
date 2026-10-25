@@ -1,121 +1,113 @@
 # ZHS Toolkit
 
-一个基于 Python 的智慧树课程命令行工具，支持课程发现、资源处理、学习流程执行与结果汇总。
+智慧树课程命令行工具，支持共享课、校内课和 AI 课程。扫码登录后自动发现课程，中断后可以继续。
 
-## 项目来源与改进
+## 第一步：安装运行环境
 
-本项目基于 [VermiIIi0n/fuckZHS](https://github.com/VermiIIi0n/fuckZHS) 深度修改、重构和优化，
-以 **ZHS Toolkit** 作为当前版本的名称，由 [Monkeypox966](https://github.com/Monkeypox966) 维护。
-感谢原作者及上游贡献者提供的课程接口适配与基础实现；本仓库为独立维护的衍生版本。
+先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，由它管理 Python 和项目依赖。
+已经安装 uv 的用户可以直接执行本节最后的 Python 安装命令。
 
-当前版本的主要改进包括：
-
-- 重构为 `src/zhs/` 模块化结构，使用 uv 管理依赖、命令行入口和构建。
-- 整合共享课、校内课与 AI 课程，补充试卷、答案校验及资料缓存处理。
-- 增加持久化任务计划、断点续跑、失败恢复、运行报告和平台进度复查。
-- 优化扫码登录、登录过期恢复、单实例接管与停止操作。
-- 增加接口契约校验、文件原子写入、进程锁、缓存配额和自动化回归测试。
-
-原项目与本项目均使用 MIT 许可证，保留原作者版权声明。详细使用与开发说明见下文及 `docs/`。
-
-## 环境
-
-- Python 3.14 或更高版本
-- uv，用于依赖管理、运行与构建
-
-## 安装与启动
+**Windows**：打开 PowerShell，执行：
 
 ```powershell
-git clone https://github.com/Monkeypox966/fuckZHS.git
-cd fuckZHS
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+**macOS / Linux**：打开终端，执行：
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+安装完成后，关闭并重新打开终端，再执行：
+
+```sh
+uv --version
+uv python install 3.14
+```
+
+## 第二步：下载项目
+
+如果已安装 Git，执行：
+
+```sh
+git clone https://github.com/Monkeypox966/zhs-toolkit.git
+cd zhs-toolkit
+```
+
+没有 Git 也可以 [下载 ZIP](https://github.com/Monkeypox966/zhs-toolkit/archive/refs/heads/main.zip)，
+解压后在包含 `pyproject.toml` 的文件夹中打开终端。
+Windows 可以在文件夹空白处右键，选择“在终端中打开”。
+
+## 第三步：启动并扫码登录
+
+在项目文件夹中执行：
+
+```sh
 uv run zhs
 ```
 
-日常只需要这一条命令。已有有效登录态时直接继续；需要登录时自动显示二维码，手机确认后自动恢复任务。
-Windows 和 macOS 默认弹出二维码窗口，无法打开时自动在终端显示；二维码过期会自动刷新。
-首次运行会生成 `config/config.json`，默认扫码登录无需填写账号密码。
-直接运行 `uv run zhs` 会发现全部课程，自动恢复未完成任务，循环处理失败项，并复查平台进度。
-没有进展时逐步延长重试间隔，直到完成或按 Ctrl+C 停止；重启同一命令可继续原计划。
-中断后仍然只需 `uv run zhs`，无需记住 `--resume`；启动时会明确提示自动恢复进度。
-再次执行 `uv run zhs` 会先通知旧实例保存状态并退出，再在当前终端继续运行。
-使用 `uv run zhs stop` 可以从另一个终端停止运行，包括后台实例，无需查找 PID。
-`--check` 仅检查登录和课程列表。
+首次启动会安装依赖，请等待安装完成。出现二维码后，用智慧树 App 扫码并在手机上确认登录，
+无需提前填写账号密码。Windows 和 macOS 默认弹出二维码窗口，其他情况会尝试在终端显示。
 
-## 常用命令
+登录成功后，程序会发现全部课程并开始处理，自动保存进度、重试失败项，并复查平台完成状态。
+运行期间请保持终端打开。默认也会处理 AI 课程测试；如果只想处理学习资源、跳过测试，使用：
 
-```powershell
-uv run zhs --fetch
-uv run zhs stop                      # 保存状态并停止正在运行的实例
-uv run zhs -c COURSE_ID
-uv run zhs -c COURSE_ID -v VIDEO_ID
-uv run zhs -ai COURSE_ID CLASS_ID --noexam
-uv run zhs --no-tree-view --no-progressbar-view
-uv run zhs --dry-run                  # 只生成任务计划
-uv run zhs --retry-failed             # 重试失败及待处理任务
-uv run zhs --report var/report.json   # 执行并导出报告
-uv run zhs --history                  # 查看运行历史，无需登录
-uv run zhs --once                     # 只执行一轮，不进入自动恢复循环
-uv run zhs --help
+```sh
+uv run zhs --noexam
 ```
 
-也可以通过 `uv run python -m zhs` 或 `uv run python main.py` 启动。
-完整参数见 [使用说明](docs/usage.md)。
+## 第四步：停止与下次继续
 
-## 目录
+在运行窗口按 **Ctrl+C** 可以中断。也可以另开终端，进入同一个项目文件夹后执行：
 
-| 路径                           | 职责                                               |
-| ------------------------------ | -------------------------------------------------- |
-| `src/zhs/`                   | 应用入口、配置与任务流程                           |
-| `src/zhs/clients/`           | 共享课、校内课、AI 课程、试卷和资料客户端          |
-| `src/zhs/journal.py`         | 持久化任务状态、续跑与 JSON 报告                   |
-| `src/zhs/common/`            | 传输、存储、日志及协议工具                         |
-| `tests/`                     | 自动化测试                                         |
-| `config/config.example.json` | 配置示例                                           |
-| `config/config.json`         | 本地账号配置，不纳入版本管理                       |
-| `var/`                       | 登录态、清单、缓存、日志和构建产物，不纳入版本管理 |
-| `docs/`                      | 使用与开发文档                                     |
-
-路径与启动目录无关。项目内默认使用 `config/` 和 `var/`；独立安装后默认使用 `~/.zhs/`。
-可通过 `ZHS_HOME` 指定其他数据根目录。
-
-源码及配置示例中的账号、密码和 API 密钥均为空。本地配置、Cookie、运行记录、日志、缓存和
-环境文件由 `.gitignore` 排除；这些数据仅保存在本地，不随本仓库发布。
-
-## 开发与验证
-
-```powershell
-uv sync --locked
-uv run ruff check --no-cache .
-uv run ruff format --check .
-uv run python -B -m unittest discover -s tests -q
-uv build --out-dir var/build
+```sh
+uv run zhs stop
 ```
 
-架构与约定见 [开发说明](docs/development.md)。依赖声明维护在 `pyproject.toml`，精确版本由 `uv.lock` 锁定。
+下次回到项目文件夹，仍然运行下面这一条命令，会自动恢复未完成的任务：
 
-## 正确性与恢复
+```sh
+uv run zhs
+```
 
-- 课程类型来自服务端元数据或显式清单，不根据 ID 字符猜测。
-- 试卷读取全部分段；AI 和缓存答案校验当前选项、数量、重复项及题目内容变化。
-- 优先使用有效缓存和 AI 答案；AI 不可用或答案不合法时随机作答，提交后缓存平台返回的有效正确答案并重试。
-- 弹题保留到全部处理成功，并对暂时失败进行有限重试。
-- 运行记录保存每次尝试的状态、错误、耗时和执行选项；中断后可续跑。
-- 默认自动恢复，30 秒起步退避至最多 300 秒；完整评分恢复后继续任务，单个知识点失败不阻塞后续知识点。
-- 登录失效先尝试 SSO 续期，需要重新登录时自动扫码；配置凭据被拒时自动切换扫码，无需重启或添加参数。
-- AI 提示文本使用本地字节预算控制长度，无需额外下载分词表；超长参考文本保留末尾题目和选项。
-- 自动模式重新读取平台进度确认学习完成，默认完成阈值为 100%。
-- AI 资源以平台完成标记为准；平台的视频完成规则为超过片段的 80%，不会把已完成的 81% 视频反复补看。汇总进度与资源状态不一致时保留提示。
-- 提交前持久化检查点，提交后确认完整评分；中途退出或结果不明确时，续跑等待平台状态核实。
-- 同一数据目录只允许一个执行实例；启动时先停止旧实例，确认锁释放后接管。运行记录、资料和答案缓存另有进程锁。
-- 下载校验非空内容和未压缩响应的声明长度，分块检查总耗时；下载和转换文本支持本地配额与过期清理。
-- 报告在执行前写入计划，结束后更新；已有非报告文件不会被覆盖，续跑汇总保留已完成的结果。
+有效登录态会自动复用；需要重新登录时会再次显示二维码。
+如果旧实例还在运行，再次启动会先通知它保存进度并退出，然后接着运行。
 
-## 运行结果
+## 其他常用操作
 
-任务结束时汇总完成、失败、待处理和跳过数量。退出码 `0` 表示正常结束或达到时限，`1` 表示存在失败或待处理项，
-`130` 表示收到运行中断信号。网络等待受各请求的超时设置约束。
+| 想做什么 | 命令 |
+| --- | --- |
+| 只检查登录和课程列表，不执行学习任务 | `uv run zhs --check` |
+| 导出课程清单及 ID 到 `var/execution.json` | `uv run zhs --fetch` |
+| 只处理指定课程 | `uv run zhs -c COURSE_ID` |
+| 只处理指定 AI 课程，并跳过测试 | `uv run zhs -ai COURSE_ID CLASS_ID --noexam` |
+| 只执行一轮，不持续重试 | `uv run zhs --once` |
+| 只生成任务计划 | `uv run zhs --dry-run` |
+| 查看运行历史 | `uv run zhs --history` |
+| 查看全部参数 | `uv run zhs --help` |
 
-## 许可证
+把 `COURSE_ID`、`CLASS_ID` 换成课程清单里的实际值；日常处理全部课程时无需填写。
 
-[MIT License](LICENSE)。原项目版权归 VermiIIi0n 所有，本项目修改部分归相应贡献者所有。
-再分发时请保留许可证及原有版权声明。
+## 常见问题
+
+**找不到 `uv` 命令？** 安装后先重新打开终端；仍不可用时，按 [uv 安装说明](https://docs.astral.sh/uv/getting-started/installation/) 检查安装。
+
+**二维码窗口没出现？** 改用 `uv run zhs --show-in-terminal`，在终端扫码。二维码过期后会自动刷新。
+
+**一直显示等待或重试？** 程序会对失败项和待确认结果继续复查。需要临时退出时按 Ctrl+C；
+之后再次运行即可继续。平台验证、网络故障或评分未返回仍可能阻止完成，以终端提示和平台实际记录为准。
+
+**配置和数据在哪里？** 首次运行会生成 `config/config.json`。登录态、日志、缓存和运行记录保存在 `var/`。
+默认扫码登录无需修改配置；外部 AI、通知等可选设置见 [完整使用说明](docs/usage.md)。
+本地配置和运行数据不会随仓库上传。
+
+更多参数、报告和恢复规则见 [完整使用说明](docs/usage.md)；参与开发见 [开发说明](docs/development.md)。
+
+## 来源与许可证
+
+本项目基于 [VermiIIi0n/fuckZHS](https://github.com/VermiIIi0n/fuckZHS) 深度修改、重构和优化，
+以 **ZHS Toolkit** 独立维护。主要改进包括模块化结构、AI 课程处理、扫码登录恢复、任务续跑和运行报告。
+感谢原作者与上游贡献者。
+
+使用 [MIT License](LICENSE)，保留原作者版权声明；修改部分归相应贡献者所有。
