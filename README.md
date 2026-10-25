@@ -2,6 +2,8 @@
 
 智慧树课程命令行工具，支持共享课、校内课和 AI 课程。扫码登录后自动发现课程，中断后可以继续。
 
+<br>
+
 ## 第一步：安装运行环境
 
 先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，由它管理 Python 和项目依赖。
@@ -26,6 +28,8 @@ uv --version
 uv python install 3.14
 ```
 
+<br>
+
 ## 第二步：下载项目
 
 如果已安装 Git，执行：
@@ -38,6 +42,8 @@ cd zhs-toolkit
 没有 Git 也可以 [下载 ZIP](https://github.com/Monkeypox966/zhs-toolkit/archive/refs/heads/main.zip)，
 解压后在包含 `pyproject.toml` 的文件夹中打开终端。
 Windows 可以在文件夹空白处右键，选择“在终端中打开”。
+
+<br>
 
 ## 第三步：启动并扫码登录
 
@@ -57,6 +63,8 @@ uv run zhs
 uv run zhs --noexam
 ```
 
+<br>
+
 ## 第四步：停止与下次继续
 
 在运行窗口按 **Ctrl+C** 可以中断。也可以另开终端，进入同一个项目文件夹后执行：
@@ -74,6 +82,8 @@ uv run zhs
 有效登录态会自动复用；需要重新登录时会再次显示二维码。
 如果旧实例还在运行，再次启动会先通知它保存进度并退出，然后接着运行。
 
+<br>
+
 ## 其他常用操作
 
 | 想做什么 | 命令 |
@@ -89,6 +99,8 @@ uv run zhs
 
 把 `COURSE_ID`、`CLASS_ID` 换成课程清单里的实际值；日常处理全部课程时无需填写。
 
+<br>
+
 ## 常见问题
 
 **找不到 `uv` 命令？** 安装后先重新打开终端；仍不可用时，按 [uv 安装说明](https://docs.astral.sh/uv/getting-started/installation/) 检查安装。
@@ -103,6 +115,8 @@ uv run zhs
 本地配置和运行数据不会随仓库上传。
 
 更多参数、报告和恢复规则见 [完整使用说明](docs/usage.md)；参与开发见 [开发说明](docs/development.md)。
+
+<br>
 
 ## 来源与许可证
 
