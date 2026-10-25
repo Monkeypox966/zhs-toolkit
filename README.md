@@ -2,6 +2,22 @@
 
 一个基于 Python 的智慧树课程命令行工具，支持课程发现、资源处理、学习流程执行与结果汇总。
 
+## 项目来源与改进
+
+本项目基于 [VermiIIi0n/fuckZHS](https://github.com/VermiIIi0n/fuckZHS) 深度修改、重构和优化，
+以 **ZHS Toolkit** 作为当前版本的名称，由 [Monkeypox966](https://github.com/Monkeypox966) 维护。
+感谢原作者及上游贡献者提供的课程接口适配与基础实现；本仓库为独立维护的衍生版本。
+
+当前版本的主要改进包括：
+
+- 重构为 `src/zhs/` 模块化结构，使用 uv 管理依赖、命令行入口和构建。
+- 整合共享课、校内课与 AI 课程，补充试卷、答案校验及资料缓存处理。
+- 增加持久化任务计划、断点续跑、失败恢复、运行报告和平台进度复查。
+- 优化扫码登录、登录过期恢复、单实例接管与停止操作。
+- 增加接口契约校验、文件原子写入、进程锁、缓存配额和自动化回归测试。
+
+原项目与本项目均使用 MIT 许可证，保留原作者版权声明。详细使用与开发说明见下文及 `docs/`。
+
 ## 环境
 
 - Python 3.14 或更高版本
@@ -10,6 +26,8 @@
 ## 安装与启动
 
 ```powershell
+git clone https://github.com/Monkeypox966/fuckZHS.git
+cd fuckZHS
 uv run zhs
 ```
 
@@ -60,6 +78,9 @@ uv run zhs --help
 路径与启动目录无关。项目内默认使用 `config/` 和 `var/`；独立安装后默认使用 `~/.zhs/`。
 可通过 `ZHS_HOME` 指定其他数据根目录。
 
+源码及配置示例中的账号、密码和 API 密钥均为空。本地配置、Cookie、运行记录、日志、缓存和
+环境文件由 `.gitignore` 排除；这些数据仅保存在本地，不随本仓库发布。
+
 ## 开发与验证
 
 ```powershell
@@ -96,4 +117,5 @@ uv build --out-dir var/build
 
 ## 许可证
 
-[MIT License](LICENSE)。
+[MIT License](LICENSE)。原项目版权归 VermiIIi0n 所有，本项目修改部分归相应贡献者所有。
+再分发时请保留许可证及原有版权声明。

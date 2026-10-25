@@ -22,3 +22,16 @@ htmlcov/
 .DS_Store
 Thumbs.db
 .env
+.env.*
+!.env.example
+
+# Exported credentials and legacy runtime files
+/config.json
+/cookies.json
+/execution.json
+/config/*.local.json
+*.log
+*.pem
+*.key
+*.p12
+*.pfx

@@ -13,6 +13,12 @@ dependencies = [
     "requests>=2.34.2",
 ]
 
+[project.urls]
+Homepage = "https://github.com/Monkeypox966/fuckZHS"
+Repository = "https://github.com/Monkeypox966/fuckZHS"
+Issues = "https://github.com/Monkeypox966/fuckZHS/issues"
+Upstream = "https://github.com/VermiIIi0n/fuckZHS"
+
 [project.scripts]
 zhs = "zhs.app:main"
 

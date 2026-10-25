@@ -464,6 +464,7 @@ class AutomaticApplicationTests(unittest.TestCase):
         self.client.fuckAiCourse.assert_called_once()
 
     def test_password_rejection_automatically_switches_to_qr(self):
+        self.config.username, self.config.password = "test-user", "test-password"
         self.config.qrlogin = False
         self.client.login.side_effect = [AuthenticationError("rejected", status=-1), None]
         self.assertEqual(self.run_app([], restored=[False, True]), 0)
@@ -521,6 +522,7 @@ class AutomaticApplicationTests(unittest.TestCase):
         self.assertEqual(loaded.data["status"], "finished")
 
     def test_explicit_no_qr_reports_rejected_credentials_without_prompt(self):
+        self.config.username, self.config.password = "test-user", "test-password"
         self.client.login.side_effect = AuthenticationError("rejected", status=-1)
         self.assertEqual(self.run_app(["--no-qrlogin"], restored=False), 1)
         self.client.login.assert_called_once()
@@ -586,6 +588,7 @@ class AutomaticApplicationTests(unittest.TestCase):
         sleep.assert_called_once_with(30)
 
     def test_login_as_different_account_does_not_replace_existing_cookie_file(self):
+        self.config.username, self.config.password = "test-user", "test-password"
         journal = RunJournal.create(
             self.root / "var/runs", [{"id": "1", "type": "ai", "classId": "2"}], {}
         )
